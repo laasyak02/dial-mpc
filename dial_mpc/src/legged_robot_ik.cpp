@@ -1,3 +1,4 @@
+// Code written to obtain different state values for the go2 legged robot to assign as the target state and check the working of the Dial-MPC algorithm 
 /*
 #include <mujoco/mujoco.h>
 #include <vector>
