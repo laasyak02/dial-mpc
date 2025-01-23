@@ -4,8 +4,11 @@
 #include <cmath>
 #include <chrono>
 #include <tuple>
-#include <unsupported/Eigen/Splines>
+#include <algorithm>
+#include <stdexcept>
+
 #include <Eigen/Dense>
+#include <unsupported/Eigen/Splines>
 
 /*
  * Corrected, detailed translation of the Python DIAL-MPC code into C++/Eigen.
@@ -82,8 +85,8 @@ public:
     next.t += 1;
     next.ctrl = u;
     // example "physics"
-    next.qpos += 0.01 * u.head(std::min<int>(state_size_, u.size()));
-    next.qvel += 0.01 * u.head(std::min<int>(state_size_, u.size()));
+    next.qpos += u.squaredNorm() * 0.1 * Eigen::VectorXd::Ones(state_size_);
+    next.qvel += u.squaredNorm() * u.squaredNorm() * 0.1 * Eigen::VectorXd::Ones(state_size_);
     // example reward: negative L2 norm of control
     next.reward = -u.squaredNorm();
     return next;
@@ -96,132 +99,236 @@ private:
   int action_size_;
 };
 
-// //////////////////////////////////////////////////////////////
-// // Quadratic spline interpolation (k=2), matching Python's
-// // InterpolatedUnivariateSpline(..., k=2)
-// //////////////////////////////////////////////////////////////
-// inline Eigen::Spline<double, 1> createQuadraticSpline(const Eigen::VectorXd &x, const Eigen::VectorXd &y)
-// {
-//   Eigen::Matrix<double, 1, Eigen::Dynamic> points(1, y.size());
-//   for (int i = 0; i < y.size(); i++)
-//   {
-//     points(0, i) = y(i);
-//   }
-//   // Rescale x to [0,1]
-//   double xmin = x.minCoeff();
-//   double xmax = x.maxCoeff();
-//   double L = xmax - xmin;
-//   Eigen::VectorXd t = (x.array() - xmin) / L;
-
-//   // Fit order=2
-//   Eigen::SplineFitting<Eigen::Spline<double, 1>> fitting;
-//   Eigen::Spline<double, 1> spline = fitting.Interpolate(points, /*splineOrder=*/y.size() - 1, t);
-//   return spline;
-// }
-
-// inline Eigen::VectorXd evaluateQuadraticSpline(const Eigen::Spline<double, 1> &spline,
-//                                                const Eigen::VectorXd &x_original,
-//                                                double xmin,
-//                                                double xmax)
-// {
-//   double L = xmax - xmin;
-//   Eigen::VectorXd out(x_original.size());
-//   for (int i = 0; i < x_original.size(); i++)
-//   {
-//     double t = (x_original(i) - xmin) / L;
-//     Eigen::Matrix<double, 1, 1> val = spline(t);
-//     out(i) = val(0, 0);
-//   }
-//   return out;
-// }
-
-// // node2u: from (Hnode+1, nu) controls at times "step_nodes_" to
-// //          (Hsample+1, nu) controls at times "step_us_"
-// inline Eigen::MatrixXd node2u(const Eigen::MatrixXd &nodes,
-//                               const Eigen::VectorXd &step_nodes,
-//                               const Eigen::VectorXd &step_us)
-// {
-//   // Output: (Hsample+1, nu)
-//   Eigen::MatrixXd us(step_us.size(), nodes.cols());
-//   for (int dim = 0; dim < nodes.cols(); dim++)
-//   {
-//     Eigen::VectorXd yvals = nodes.col(dim);
-//     Eigen::Spline<double, 1> spline = createQuadraticSpline(step_nodes, yvals);
-//     double xmin = step_nodes.minCoeff();
-//     double xmax = step_nodes.maxCoeff();
-//     Eigen::VectorXd result = evaluateQuadraticSpline(spline, step_us, xmin, xmax);
-//     us.col(dim) = result;
-//   }
-//   return us;
-// }
-
-// // u2node: from (Hsample+1, nu) controls at times "step_us_" to
-// //          (Hnode+1, nu) controls at times "step_nodes_"
-// inline Eigen::MatrixXd u2node(const Eigen::MatrixXd &us,
-//                               const Eigen::VectorXd &step_us,
-//                               const Eigen::VectorXd &step_nodes)
-// {
-//   // Output: (Hnode+1, nu)
-//   Eigen::MatrixXd nodes(step_nodes.size(), us.cols());
-//   for (int dim = 0; dim < us.cols(); dim++)
-//   {
-//     Eigen::VectorXd yvals = us.col(dim);
-//     Eigen::Spline<double, 1> spline = createQuadraticSpline(step_us, yvals);
-//     double xmin = step_us.minCoeff();
-//     double xmax = step_us.maxCoeff();
-//     Eigen::VectorXd result = evaluateQuadraticSpline(spline, step_nodes, xmin, xmax);
-//     nodes.col(dim) = result;
-//   }
-//   return nodes;
-// }
-
-inline Eigen::Spline<double, 1>
-createQuadraticSpline(const Eigen::VectorXd &x, // domain
-                      const Eigen::VectorXd &y) // range
+/**
+ * @brief Compute the piecewise cubic Hermite interpolation (natural spline) 
+ *        of the given data at specified query times.
+ *
+ * @param[in]  states      An N x M matrix, where row i is the state at time knotTimes(i).
+ * @param[in]  knotTimes   A length-N vector of strictly increasing knot times.
+ * @param[in]  queryTimes  A length-Q vector of times at which to interpolate.
+ * @return     A Q x M matrix of interpolated values.  Row q corresponds 
+ *             to queryTimes(q), and column m corresponds to dimension m.
+ *
+ * The algorithm:
+ *  1. For each of the M columns, solve for the "natural spline" second derivatives via a 
+ *     simple tridiagonal O(N) pass (the classical cubic-spline approach).
+ *  2. From these second derivatives, recover the knot *first derivatives*, 
+ *     which fully determine the Hermite form on each interval.
+ *  3. For each query time, identify the appropriate interval [t_i, t_{i+1}] and 
+ *     evaluate the cubic Hermite polynomial using the standard Hermite basis.
+ */
+Eigen::MatrixXd piecewiseCubicHermiteInterpolate(
+    const Eigen::MatrixXd& states,
+    const Eigen::VectorXd& knotTimes,
+    const Eigen::VectorXd& queryTimes)
 {
-  const int N = x.size();
-  if (N < 2) {
-    // Edge case: not enough points to do a 2nd order spline.
-    // You might throw an error or create a degenerate "constant" function.
-    // For example, handle N=1 or N=0 gracefully:
-    // ...
-  }
+    using namespace Eigen;
+    
+    // Basic checks
+    const int N = static_cast<int>(knotTimes.size());  // number of knot points
+    const int M = static_cast<int>(states.cols());     // dimension of the states
+    if (states.rows() != N) {
+        throw std::runtime_error("states.rows() must match knotTimes.size()");
+    }
+    if (N < 2) {
+        throw std::runtime_error("Need at least 2 knot points for cubic spline");
+    }
+    
+    const int Q = static_cast<int>(queryTimes.size()); // number of query points
+    MatrixXd result(Q, M);
+    if (Q == 0) {
+        return result; // empty
+    }
 
-  // 1) Build "points" as 1 x N
-  Eigen::Matrix<double, 1, Eigen::Dynamic> points(1, N);
-  for (int i=0; i<N; i++){
-    points(0,i) = y(i);
-  }
+    //--------------------------------------------------------------------------------
+    // 1) Precompute interval lengths h_i = t_{i+1} - t_i
+    //    We'll store them for quick access.
+    //--------------------------------------------------------------------------------
+    std::vector<double> h(N-1);
+    for (int i = 0; i < N-1; ++i) {
+        double dt = knotTimes(i+1) - knotTimes(i);
+        if (dt <= 0.0) {
+            throw std::runtime_error("knotTimes must be strictly increasing");
+        }
+        h[i] = dt;
+    }
 
-  // 2) Scale x -> [0,1]
-  double xmin = x.minCoeff();
-  double xmax = x.maxCoeff();
-  double L = (xmax > xmin)? (xmax - xmin) : 1.0; // avoid /0
+    //--------------------------------------------------------------------------------
+    // 2) For each dimension m, compute the second derivatives at the knots 
+    //    under "natural" boundary conditions.  We'll store those in an N x M matrix.
+    //
+    //    We'll do the standard tridiagonal solve:
+    //
+    //      Let alpha_i = 3 * ( (y_{i+1}-y_i)/h_i - (y_i - y_{i-1})/h_{i-1} )
+    //      with alpha_0 = alpha_{N-1} = 0  (natural boundary).
+    //
+    //    Solve for M_i in the system:
+    //      2(h_{i-1}+h_i) * M_i + h_i * M_{i+1} + h_{i-1} * M_{i-1} = alpha_i
+    //
+    //    Then the second derivatives at each knot are M_i.
+    //--------------------------------------------------------------------------------
+    MatrixXd secondDerivs(N, M);
+    secondDerivs.setZero();
 
-  Eigen::RowVectorXd t_row(N);
-  for (int i=0; i<N; i++){
-    t_row(i) = (x(i) - xmin) / L;
-  }
+    // We'll do each dimension's second-derivative solution in turn:
+    for (int mIdx = 0; mIdx < M; ++mIdx)
+    {
+        // We'll build 'alpha', 'l', 'mu', 'z' (classic notations) for dimension mIdx
+        VectorXd alpha = VectorXd::Zero(N);
+        
+        // Compute alpha for i=1..N-2
+        // alpha_i = 3 * [(y_{i+1}-y_i)/h_i - (y_i - y_{i-1})/h_{i-1}]
+        for (int i = 1; i < N-1; ++i) {
+            double y_im1 = states(i-1, mIdx);
+            double y_i   = states(i,   mIdx);
+            double y_ip1 = states(i+1, mIdx);
+            alpha(i) = 3.0 * ( (y_ip1 - y_i) / h[i] - (y_i - y_im1) / h[i-1] );
+        }
+        // Natural boundary => alpha(0)=0, alpha(N-1)=0
 
-  // 3) For a 2nd-order spline, let's set:
-  //    numKnots = max(0, N - 2).
-  int numKnots = std::max(0, N - 2);
+        // l, mu, z for the forward pass
+        VectorXd l  = VectorXd::Zero(N);
+        VectorXd mu = VectorXd::Zero(N);
+        VectorXd z  = VectorXd::Zero(N);
 
-  // 4) Fit
-  return Eigen::SplineFitting<Eigen::Spline<double,1>>::Interpolate(
-      points,
-      numKnots,
-      t_row
-  );
-}
+        l(0)  = 1.0;  // natural boundary
+        mu(0) = 0.0;
+        z(0)  = 0.0;
+        for (int i = 1; i < N-1; ++i) {
+            l(i) = 2.0 * (knotTimes(i+1) - knotTimes(i-1)) - h[i-1] * mu(i-1);
+            mu(i) = h[i] / l(i);
+            z(i)  = (alpha(i) - h[i-1] * z(i-1)) / l(i);
+        }
+        // boundary
+        l(N-1) = 1.0;
+        z(N-1) = 0.0;
 
-inline double evaluateSpline(const Eigen::Spline<double,1> &spline,
-                             double xVal, double xMin, double xMax)
-{
-  double L = (xMax > xMin)? (xMax - xMin) : 1.0;
-  double t = (xVal - xMin) / L;
-  Eigen::Matrix<double,1,1> val = spline(t);
-  return val(0,0);
+        // Now the backward pass to get the second derivatives M_i
+        // We'll temporarily store them in secondDerivs.col(mIdx).
+        secondDerivs(N-1, mIdx) = 0.0;
+        for (int i = N-2; i >= 0; --i) {
+            secondDerivs(i, mIdx) = z(i) - mu(i) * secondDerivs(i+1, mIdx);
+        }
+    }
+
+    //--------------------------------------------------------------------------------
+    // 3) Recover the *first* derivatives at each knot from the second derivatives.
+    //    For a natural cubic spline on [t_i, t_{i+1}], the polynomial is:
+    //       s_i(t) = y_i + B_i (t - t_i) + C_i (t - t_i)^2 + D_i (t - t_i)^3
+    //    with
+    //       B_i = (y_{i+1}-y_i)/h_i - h_i/6 * (2*M_i + M_{i+1})
+    //    (Here M_i = s''(t_i).)
+    //
+    //    The slope at knot i is s'(t_i).  For the interior knot i, that slope is 
+    //    typically deduced from the piece on [t_{i-1}, t_i], but for convenience 
+    //    we can pick it from [t_i, t_{i+1}] or ensure they match. They do match 
+    //    for a C^2 spline. We will just pick the forward difference formula for m_i:
+    //      m_i = B_i = (y_{i+1}-y_i)/h_i - (h_i/6)*(2*M_i + M_{i+1})
+    //--------------------------------------------------------------------------------
+
+    MatrixXd firstDerivs(N, M);
+    for (int mIdx = 0; mIdx < M; ++mIdx)
+    {
+        for (int i = 0; i < N-1; ++i) {
+            double y_i   = states(i,   mIdx);
+            double y_ip1 = states(i+1, mIdx);
+            double M_i   = secondDerivs(i,   mIdx);
+            double M_ip1 = secondDerivs(i+1, mIdx);
+            double Hi    = h[i];
+
+            double Bi = (y_ip1 - y_i)/Hi - (Hi/6.0)*(2.0*M_i + M_ip1);
+            // That is the slope that the spline takes *leaving* point i
+            firstDerivs(i, mIdx) = Bi;
+        }
+        // For the last knot i = N-1, we can match from the left interval:
+        // slope at i = B_{i-1} + h_{i-1}*derivative_of_polynomial... 
+        // But simpler is to ensure continuity with the prior segment:
+        // We can just do it from the formula on [N-2, N-1].
+        {
+            int i = N-1;
+            double y_im1  = states(i-1, mIdx);
+            double y_i    = states(i,   mIdx);
+            double M_im1  = secondDerivs(i-1, mIdx);
+            double M_i    = secondDerivs(i,   mIdx);
+            double Hi     = h[N-2];
+            double BiLast = (y_i - y_im1)/Hi - (Hi/6.0)*(2.0*M_im1 + M_i);
+            firstDerivs(i, mIdx) = BiLast;
+        }
+    }
+
+    //--------------------------------------------------------------------------------
+    // 4) For each query time, do a fast piecewise search (e.g. std::upper_bound)
+    //    to find the interval i such that knotTimes(i) <= t < knotTimes(i+1).
+    //    Then use the standard cubic Hermite basis for that interval.
+    //
+    //    On [t_i, t_{i+1}], the Hermite form is:
+    //
+    //      Let  p_i = states(i,m),   p_{i+1} = states(i+1,m)
+    //           m_i = firstDerivs(i,m),   m_{i+1} = firstDerivs(i+1,m)
+    //           h_i = knotTimes(i+1) - knotTimes(i)
+    //           u   = (t - knotTimes(i)) / h_i   in [0,1].
+    //
+    //      Then
+    //        S(u) =  p_i * H_00(u) + (h_i m_i) * H_10(u)
+    //              + p_{i+1} * H_01(u) + (h_i m_{i+1}) * H_11(u),
+    //      where
+    //        H_00(u) =  2u^3 - 3u^2 + 1
+    //        H_10(u) =      u^3 - 2u^2 + u
+    //        H_01(u) = -2u^3 + 3u^2
+    //        H_11(u) =      u^3 -     u^2
+    //--------------------------------------------------------------------------------
+
+    // For fast interval lookup, we’ll just do a pointer into knotTimes if queryTimes is sorted.
+    // If queryTimes is not guaranteed sorted, you can do an independent binary_search for each
+    // query.  Here we assume sorted queries for maximum efficiency with a single pass.
+    // If not sorted, replace this pass with a per-query std::upper_bound.
+    
+    int intervalIndex = 0; // we will move forward through the knot intervals
+    for (int q = 0; q < Q; ++q)
+    {
+        double tq = queryTimes(q);
+
+        // Advance intervalIndex as needed so that:
+        //   knotTimes(intervalIndex) <= tq < knotTimes(intervalIndex+1)
+        while (intervalIndex < N-2 && tq > knotTimes(intervalIndex+1)) {
+            intervalIndex++;
+        }
+
+        // Clamp or assume in-range
+        if (intervalIndex >= N-1) {
+            intervalIndex = N-2;  // handle boundary
+        }
+
+        double t0 = knotTimes(intervalIndex);
+        double t1 = knotTimes(intervalIndex+1);
+        double hInt = t1 - t0;
+        double u = (tq - t0) / hInt;  // in [0,1]
+
+        // Precompute Hermite basis polynomials
+        double u2 = u * u;
+        double u3 = u2 * u;
+        double H00 =  2.0*u3 - 3.0*u2 + 1.0;
+        double H10 =        u3 - 2.0*u2 + u;
+        double H01 = -2.0*u3 + 3.0*u2;
+        double H11 =        u3 -       u2;
+
+        for (int mIdx = 0; mIdx < M; ++mIdx) {
+            double p_i  = states(intervalIndex,   mIdx);
+            double p_ip1= states(intervalIndex+1, mIdx);
+            double m_i  = firstDerivs(intervalIndex,   mIdx);
+            double m_ip1= firstDerivs(intervalIndex+1, mIdx);
+
+            // S(t) = p_i*H00 + (h*m_i)*H10 + p_{i+1}*H01 + (h*m_{i+1})*H11
+            double val = p_i  * H00
+                       + (hInt*m_i)   * H10
+                       + p_ip1* H01
+                       + (hInt*m_ip1) * H11;
+
+            result(q, mIdx) = val;
+        }
+    }
+
+    return result;
 }
 
 inline Eigen::MatrixXd node2u(const Eigen::MatrixXd &nodes,
@@ -229,25 +336,7 @@ inline Eigen::MatrixXd node2u(const Eigen::MatrixXd &nodes,
                               const Eigen::VectorXd &step_us)
 {
   // nodes has shape (Hnode+1, nu)
-  // We'll produce us with shape (Hsample+1, nu)
-
-  Eigen::MatrixXd us(step_us.size(), nodes.cols());
-  double xmin = step_nodes.minCoeff();
-  double xmax = step_nodes.maxCoeff();
-
-  for(int dim=0; dim < nodes.cols(); dim++){
-    // For this dimension, get the y-values
-    Eigen::VectorXd yvals = nodes.col(dim);
-    // Create spline
-    Eigen::Spline<double,1> spline = createQuadraticSpline(step_nodes, yvals);
-
-    // Evaluate
-    for(int i=0; i<step_us.size(); i++){
-      double val = evaluateSpline(spline, step_us(i), xmin, xmax);
-      us(i, dim) = val;
-    }
-  }
-  return us;
+  return piecewiseCubicHermiteInterpolate(nodes, step_nodes, step_us);
 }
 
 inline Eigen::MatrixXd u2node(const Eigen::MatrixXd &us,
@@ -255,25 +344,7 @@ inline Eigen::MatrixXd u2node(const Eigen::MatrixXd &us,
                               const Eigen::VectorXd &step_nodes)
 {
   // us has shape (Hsample+1, nu)
-  // We'll produce nodes with shape (Hnode+1, nu)
-
-  Eigen::MatrixXd nodes(step_nodes.size(), us.cols());
-  double xmin = step_us.minCoeff();
-  double xmax = step_us.maxCoeff();
-
-  for(int dim=0; dim < us.cols(); dim++){
-    // For this dimension, get the y-values
-    Eigen::VectorXd yvals = us.col(dim);
-    // Create spline
-    Eigen::Spline<double,1> spline = createQuadraticSpline(step_us, yvals);
-
-    // Evaluate
-    for(int i=0; i<step_nodes.size(); i++){
-      double val = evaluateSpline(spline, step_nodes(i), xmin, xmax);
-      nodes(i, dim) = val;
-    }
-  }
-  return nodes;
+  return piecewiseCubicHermiteInterpolate(us, step_us, step_nodes);
 }
 
 //////////////////////////////////////////////////////////////
@@ -351,7 +422,7 @@ public:
     EnvState cur = state;
     for (int t = 0; t < T; t++)
     {
-      cur = env_.step(cur, us.row(t));
+      cur = env_.step(cur, us.row(t).eval());
       rewards(t) = cur.reward;
       pipeline_states.push_back(cur);
     }
@@ -441,6 +512,7 @@ public:
 
     // 4) Rollout for each sample
     std::vector<Eigen::VectorXd> rews_batch = rollout_us_batch(state, batch_us);
+
     // The last sample is Ybar_i
     Eigen::VectorXd rews_Ybar_i = rews_batch.back(); // shape (Hsample+1)
     double rew_Ybar_i = rews_Ybar_i.mean();
@@ -564,17 +636,17 @@ int main()
 {
   // 1) Build config
   DialConfig cfg;
-  cfg.seed = 123;
-  cfg.Hsample = 15;
-  cfg.Hnode = 5;
-  cfg.Nsample = 32;
-  cfg.Ndiffuse = 5;
-  cfg.Ndiffuse_init = 5;
-  cfg.temp_sample = 1.0;
-  cfg.n_steps = 10; // shorter demonstration
+  cfg.seed = 0;
+  cfg.Hsample = 16;
+  cfg.Hnode = 4;
+  cfg.Nsample = 20;
+  cfg.Ndiffuse = 2;
+  cfg.Ndiffuse_init = 10;
+  cfg.temp_sample = 0.05;
+  cfg.n_steps = 400; // shorter demonstration
   cfg.ctrl_dt = 0.02;
-  cfg.horizon_diffuse_factor = 1.0;
-  cfg.traj_diffuse_factor = 1.0;
+  cfg.horizon_diffuse_factor = 0.9;
+  cfg.traj_diffuse_factor = 0.5;
 
   // 2) Create environment: e.g., 4D state, 3D action
   Env env(/*state_size=*/4, /*action_size=*/3);
