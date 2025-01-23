@@ -1,14 +1,15 @@
-#include <iostream>
-#include <vector>
-#include <random>
-#include <cmath>
-#include <chrono>
-#include <tuple>
-#include <algorithm>
-#include <stdexcept>
+#include "unitree-go2-env.h"
 
 #include <Eigen/Dense>
 #include <unsupported/Eigen/Splines>
+
+#include <random>
+#include <string>
+#include <vector>
+#include <iostream>
+#include <tuple>
+#include <algorithm>
+#include <stdexcept>
 
 /*
  * Corrected, detailed translation of the Python DIAL-MPC code into C++/Eigen.
@@ -33,302 +34,259 @@
 //////////////////////////////////////////////////////////////
 struct DialConfig
 {
-  int seed = 42;
-  int Hsample = 15;                    // horizon sample
-  int Hnode = 5;                       // number of node points
-  int Nsample = 32;                    // number of samples at each diffusion iteration
-  int Ndiffuse = 5;                    // how many times we run "reverse_once" each planning step
-  int Ndiffuse_init = 5;               // used at the first iteration
-  double temp_sample = 1.0;            // temperature
-  double horizon_diffuse_factor = 1.0; // multiplies sigma_control
+  int seed = 0;
+  int Hsample = 16;                    // horizon sample
+  int Hnode = 4;                       // number of node points
+  int Nsample = 20;                    // number of samples at each diffusion iteration
+  int Ndiffuse = 2;                    // how many times we run "reverse_once" each planning step
+  int Ndiffuse_init = 10;              // used at the first iteration
+  double temp_sample = 0.05;           // temperature
+  double horizon_diffuse_factor = 0.5; // multiplies sigma_control
   double ctrl_dt = 0.02;               // control dt
-  int n_steps = 50;                    // number of rollout steps
-  double traj_diffuse_factor = 1.0;    // factor^i in each "reverse_once" iteration
+  int n_steps = 400;                   // number of rollout steps
+  double traj_diffuse_factor = 0.5;    // factor^i in each "reverse_once" iteration
   std::string update_method = "mppi";  // only "mppi" used in the original script
 };
 
-//////////////////////////////////////////////////////////////
-// Simple environment definitions
-//////////////////////////////////////////////////////////////
-struct EnvState
-{
-  int t;
-  Eigen::VectorXd qpos;
-  Eigen::VectorXd qvel;
-  Eigen::VectorXd ctrl;
-  double reward;
-};
-
-class Env
-{
-public:
-  // Example environment with a chosen state dimension, you can adapt as needed.
-  Env(int state_size, int action_size)
-      : state_size_(state_size), action_size_(action_size) {}
-
-  // Reset environment
-  EnvState reset(std::mt19937_64 &rng)
-  {
-    EnvState s;
-    s.t = 0;
-    s.qpos = Eigen::VectorXd::Zero(state_size_);
-    s.qvel = Eigen::VectorXd::Zero(state_size_);
-    s.ctrl = Eigen::VectorXd::Zero(action_size_);
-    s.reward = 0.0;
-    return s;
-  }
-
-  // Step environment: for demonstration, just do something trivial
-  EnvState step(const EnvState &state, const Eigen::VectorXd &u)
-  {
-    EnvState next = state;
-    next.t += 1;
-    next.ctrl = u;
-    // example "physics"
-    next.qpos += u.squaredNorm() * 0.1 * Eigen::VectorXd::Ones(state_size_);
-    next.qvel += u.squaredNorm() * u.squaredNorm() * 0.1 * Eigen::VectorXd::Ones(state_size_);
-    // example reward: negative L2 norm of control
-    next.reward = -u.squaredNorm();
-    return next;
-  }
-
-  int action_size() const { return action_size_; }
-
-private:
-  int state_size_;
-  int action_size_;
-};
-
 /**
- * @brief Compute the piecewise cubic Hermite interpolation (natural spline) 
+ * @brief Compute the piecewise cubic Hermite interpolation (natural spline)
  *        of the given data at specified query times.
  *
  * @param[in]  states      An N x M matrix, where row i is the state at time knotTimes(i).
  * @param[in]  knotTimes   A length-N vector of strictly increasing knot times.
  * @param[in]  queryTimes  A length-Q vector of times at which to interpolate.
- * @return     A Q x M matrix of interpolated values.  Row q corresponds 
+ * @return     A Q x M matrix of interpolated values.  Row q corresponds
  *             to queryTimes(q), and column m corresponds to dimension m.
  *
  * The algorithm:
- *  1. For each of the M columns, solve for the "natural spline" second derivatives via a 
+ *  1. For each of the M columns, solve for the "natural spline" second derivatives via a
  *     simple tridiagonal O(N) pass (the classical cubic-spline approach).
- *  2. From these second derivatives, recover the knot *first derivatives*, 
+ *  2. From these second derivatives, recover the knot *first derivatives*,
  *     which fully determine the Hermite form on each interval.
- *  3. For each query time, identify the appropriate interval [t_i, t_{i+1}] and 
+ *  3. For each query time, identify the appropriate interval [t_i, t_{i+1}] and
  *     evaluate the cubic Hermite polynomial using the standard Hermite basis.
  */
 Eigen::MatrixXd piecewiseCubicHermiteInterpolate(
-    const Eigen::MatrixXd& states,
-    const Eigen::VectorXd& knotTimes,
-    const Eigen::VectorXd& queryTimes)
+    const Eigen::MatrixXd &states,
+    const Eigen::VectorXd &knotTimes,
+    const Eigen::VectorXd &queryTimes)
 {
-    using namespace Eigen;
-    
-    // Basic checks
-    const int N = static_cast<int>(knotTimes.size());  // number of knot points
-    const int M = static_cast<int>(states.cols());     // dimension of the states
-    if (states.rows() != N) {
-        throw std::runtime_error("states.rows() must match knotTimes.size()");
+  using namespace Eigen;
+
+  // Basic checks
+  const int N = static_cast<int>(knotTimes.size()); // number of knot points
+  const int M = static_cast<int>(states.cols());    // dimension of the states
+  if (states.rows() != N)
+  {
+    throw std::runtime_error("states.rows() must match knotTimes.size()");
+  }
+  if (N < 2)
+  {
+    throw std::runtime_error("Need at least 2 knot points for cubic spline");
+  }
+
+  const int Q = static_cast<int>(queryTimes.size()); // number of query points
+  MatrixXd result(Q, M);
+  if (Q == 0)
+  {
+    return result; // empty
+  }
+
+  //--------------------------------------------------------------------------------
+  // 1) Precompute interval lengths h_i = t_{i+1} - t_i
+  //    We'll store them for quick access.
+  //--------------------------------------------------------------------------------
+  std::vector<double> h(N - 1);
+  for (int i = 0; i < N - 1; ++i)
+  {
+    double dt = knotTimes(i + 1) - knotTimes(i);
+    if (dt <= 0.0)
+    {
+      throw std::runtime_error("knotTimes must be strictly increasing");
     }
-    if (N < 2) {
-        throw std::runtime_error("Need at least 2 knot points for cubic spline");
+    h[i] = dt;
+  }
+
+  //--------------------------------------------------------------------------------
+  // 2) For each dimension m, compute the second derivatives at the knots
+  //    under "natural" boundary conditions.  We'll store those in an N x M matrix.
+  //
+  //    We'll do the standard tridiagonal solve:
+  //
+  //      Let alpha_i = 3 * ( (y_{i+1}-y_i)/h_i - (y_i - y_{i-1})/h_{i-1} )
+  //      with alpha_0 = alpha_{N-1} = 0  (natural boundary).
+  //
+  //    Solve for M_i in the system:
+  //      2(h_{i-1}+h_i) * M_i + h_i * M_{i+1} + h_{i-1} * M_{i-1} = alpha_i
+  //
+  //    Then the second derivatives at each knot are M_i.
+  //--------------------------------------------------------------------------------
+  MatrixXd secondDerivs(N, M);
+  secondDerivs.setZero();
+
+  // We'll do each dimension's second-derivative solution in turn:
+  for (int mIdx = 0; mIdx < M; ++mIdx)
+  {
+    // We'll build 'alpha', 'l', 'mu', 'z' (classic notations) for dimension mIdx
+    VectorXd alpha = VectorXd::Zero(N);
+
+    // Compute alpha for i=1..N-2
+    // alpha_i = 3 * [(y_{i+1}-y_i)/h_i - (y_i - y_{i-1})/h_{i-1}]
+    for (int i = 1; i < N - 1; ++i)
+    {
+      double y_im1 = states(i - 1, mIdx);
+      double y_i = states(i, mIdx);
+      double y_ip1 = states(i + 1, mIdx);
+      alpha(i) = 3.0 * ((y_ip1 - y_i) / h[i] - (y_i - y_im1) / h[i - 1]);
     }
-    
-    const int Q = static_cast<int>(queryTimes.size()); // number of query points
-    MatrixXd result(Q, M);
-    if (Q == 0) {
-        return result; // empty
+    // Natural boundary => alpha(0)=0, alpha(N-1)=0
+
+    // l, mu, z for the forward pass
+    VectorXd l = VectorXd::Zero(N);
+    VectorXd mu = VectorXd::Zero(N);
+    VectorXd z = VectorXd::Zero(N);
+
+    l(0) = 1.0; // natural boundary
+    mu(0) = 0.0;
+    z(0) = 0.0;
+    for (int i = 1; i < N - 1; ++i)
+    {
+      l(i) = 2.0 * (knotTimes(i + 1) - knotTimes(i - 1)) - h[i - 1] * mu(i - 1);
+      mu(i) = h[i] / l(i);
+      z(i) = (alpha(i) - h[i - 1] * z(i - 1)) / l(i);
+    }
+    // boundary
+    l(N - 1) = 1.0;
+    z(N - 1) = 0.0;
+
+    // Now the backward pass to get the second derivatives M_i
+    // We'll temporarily store them in secondDerivs.col(mIdx).
+    secondDerivs(N - 1, mIdx) = 0.0;
+    for (int i = N - 2; i >= 0; --i)
+    {
+      secondDerivs(i, mIdx) = z(i) - mu(i) * secondDerivs(i + 1, mIdx);
+    }
+  }
+
+  //--------------------------------------------------------------------------------
+  // 3) Recover the *first* derivatives at each knot from the second derivatives.
+  //    For a natural cubic spline on [t_i, t_{i+1}], the polynomial is:
+  //       s_i(t) = y_i + B_i (t - t_i) + C_i (t - t_i)^2 + D_i (t - t_i)^3
+  //    with
+  //       B_i = (y_{i+1}-y_i)/h_i - h_i/6 * (2*M_i + M_{i+1})
+  //    (Here M_i = s''(t_i).)
+  //
+  //    The slope at knot i is s'(t_i).  For the interior knot i, that slope is
+  //    typically deduced from the piece on [t_{i-1}, t_i], but for convenience
+  //    we can pick it from [t_i, t_{i+1}] or ensure they match. They do match
+  //    for a C^2 spline. We will just pick the forward difference formula for m_i:
+  //      m_i = B_i = (y_{i+1}-y_i)/h_i - (h_i/6)*(2*M_i + M_{i+1})
+  //--------------------------------------------------------------------------------
+
+  MatrixXd firstDerivs(N, M);
+  for (int mIdx = 0; mIdx < M; ++mIdx)
+  {
+    for (int i = 0; i < N - 1; ++i)
+    {
+      double y_i = states(i, mIdx);
+      double y_ip1 = states(i + 1, mIdx);
+      double M_i = secondDerivs(i, mIdx);
+      double M_ip1 = secondDerivs(i + 1, mIdx);
+      double Hi = h[i];
+
+      double Bi = (y_ip1 - y_i) / Hi - (Hi / 6.0) * (2.0 * M_i + M_ip1);
+      // That is the slope that the spline takes *leaving* point i
+      firstDerivs(i, mIdx) = Bi;
+    }
+    // For the last knot i = N-1, we can match from the left interval:
+    // slope at i = B_{i-1} + h_{i-1}*derivative_of_polynomial...
+    // But simpler is to ensure continuity with the prior segment:
+    // We can just do it from the formula on [N-2, N-1].
+    {
+      int i = N - 1;
+      double y_im1 = states(i - 1, mIdx);
+      double y_i = states(i, mIdx);
+      double M_im1 = secondDerivs(i - 1, mIdx);
+      double M_i = secondDerivs(i, mIdx);
+      double Hi = h[N - 2];
+      double BiLast = (y_i - y_im1) / Hi - (Hi / 6.0) * (2.0 * M_im1 + M_i);
+      firstDerivs(i, mIdx) = BiLast;
+    }
+  }
+
+  //--------------------------------------------------------------------------------
+  // 4) For each query time, do a fast piecewise search (e.g. std::upper_bound)
+  //    to find the interval i such that knotTimes(i) <= t < knotTimes(i+1).
+  //    Then use the standard cubic Hermite basis for that interval.
+  //
+  //    On [t_i, t_{i+1}], the Hermite form is:
+  //
+  //      Let  p_i = states(i,m),   p_{i+1} = states(i+1,m)
+  //           m_i = firstDerivs(i,m),   m_{i+1} = firstDerivs(i+1,m)
+  //           h_i = knotTimes(i+1) - knotTimes(i)
+  //           u   = (t - knotTimes(i)) / h_i   in [0,1].
+  //
+  //      Then
+  //        S(u) =  p_i * H_00(u) + (h_i m_i) * H_10(u)
+  //              + p_{i+1} * H_01(u) + (h_i m_{i+1}) * H_11(u),
+  //      where
+  //        H_00(u) =  2u^3 - 3u^2 + 1
+  //        H_10(u) =      u^3 - 2u^2 + u
+  //        H_01(u) = -2u^3 + 3u^2
+  //        H_11(u) =      u^3 -     u^2
+  //--------------------------------------------------------------------------------
+
+  // For fast interval lookup, we’ll just do a pointer into knotTimes if queryTimes is sorted.
+  // If queryTimes is not guaranteed sorted, you can do an independent binary_search for each
+  // query.  Here we assume sorted queries for maximum efficiency with a single pass.
+  // If not sorted, replace this pass with a per-query std::upper_bound.
+
+  int intervalIndex = 0; // we will move forward through the knot intervals
+  for (int q = 0; q < Q; ++q)
+  {
+    double tq = queryTimes(q);
+
+    // Advance intervalIndex as needed so that:
+    //   knotTimes(intervalIndex) <= tq < knotTimes(intervalIndex+1)
+    while (intervalIndex < N - 2 && tq > knotTimes(intervalIndex + 1))
+    {
+      intervalIndex++;
     }
 
-    //--------------------------------------------------------------------------------
-    // 1) Precompute interval lengths h_i = t_{i+1} - t_i
-    //    We'll store them for quick access.
-    //--------------------------------------------------------------------------------
-    std::vector<double> h(N-1);
-    for (int i = 0; i < N-1; ++i) {
-        double dt = knotTimes(i+1) - knotTimes(i);
-        if (dt <= 0.0) {
-            throw std::runtime_error("knotTimes must be strictly increasing");
-        }
-        h[i] = dt;
+    // Clamp or assume in-range
+    if (intervalIndex >= N - 1)
+    {
+      intervalIndex = N - 2; // handle boundary
     }
 
-    //--------------------------------------------------------------------------------
-    // 2) For each dimension m, compute the second derivatives at the knots 
-    //    under "natural" boundary conditions.  We'll store those in an N x M matrix.
-    //
-    //    We'll do the standard tridiagonal solve:
-    //
-    //      Let alpha_i = 3 * ( (y_{i+1}-y_i)/h_i - (y_i - y_{i-1})/h_{i-1} )
-    //      with alpha_0 = alpha_{N-1} = 0  (natural boundary).
-    //
-    //    Solve for M_i in the system:
-    //      2(h_{i-1}+h_i) * M_i + h_i * M_{i+1} + h_{i-1} * M_{i-1} = alpha_i
-    //
-    //    Then the second derivatives at each knot are M_i.
-    //--------------------------------------------------------------------------------
-    MatrixXd secondDerivs(N, M);
-    secondDerivs.setZero();
+    double t0 = knotTimes(intervalIndex);
+    double t1 = knotTimes(intervalIndex + 1);
+    double hInt = t1 - t0;
+    double u = (tq - t0) / hInt; // in [0,1]
 
-    // We'll do each dimension's second-derivative solution in turn:
+    // Precompute Hermite basis polynomials
+    double u2 = u * u;
+    double u3 = u2 * u;
+    double H00 = 2.0 * u3 - 3.0 * u2 + 1.0;
+    double H10 = u3 - 2.0 * u2 + u;
+    double H01 = -2.0 * u3 + 3.0 * u2;
+    double H11 = u3 - u2;
+
     for (int mIdx = 0; mIdx < M; ++mIdx)
     {
-        // We'll build 'alpha', 'l', 'mu', 'z' (classic notations) for dimension mIdx
-        VectorXd alpha = VectorXd::Zero(N);
-        
-        // Compute alpha for i=1..N-2
-        // alpha_i = 3 * [(y_{i+1}-y_i)/h_i - (y_i - y_{i-1})/h_{i-1}]
-        for (int i = 1; i < N-1; ++i) {
-            double y_im1 = states(i-1, mIdx);
-            double y_i   = states(i,   mIdx);
-            double y_ip1 = states(i+1, mIdx);
-            alpha(i) = 3.0 * ( (y_ip1 - y_i) / h[i] - (y_i - y_im1) / h[i-1] );
-        }
-        // Natural boundary => alpha(0)=0, alpha(N-1)=0
+      double p_i = states(intervalIndex, mIdx);
+      double p_ip1 = states(intervalIndex + 1, mIdx);
+      double m_i = firstDerivs(intervalIndex, mIdx);
+      double m_ip1 = firstDerivs(intervalIndex + 1, mIdx);
 
-        // l, mu, z for the forward pass
-        VectorXd l  = VectorXd::Zero(N);
-        VectorXd mu = VectorXd::Zero(N);
-        VectorXd z  = VectorXd::Zero(N);
+      // S(t) = p_i*H00 + (h*m_i)*H10 + p_{i+1}*H01 + (h*m_{i+1})*H11
+      double val = p_i * H00 + (hInt * m_i) * H10 + p_ip1 * H01 + (hInt * m_ip1) * H11;
 
-        l(0)  = 1.0;  // natural boundary
-        mu(0) = 0.0;
-        z(0)  = 0.0;
-        for (int i = 1; i < N-1; ++i) {
-            l(i) = 2.0 * (knotTimes(i+1) - knotTimes(i-1)) - h[i-1] * mu(i-1);
-            mu(i) = h[i] / l(i);
-            z(i)  = (alpha(i) - h[i-1] * z(i-1)) / l(i);
-        }
-        // boundary
-        l(N-1) = 1.0;
-        z(N-1) = 0.0;
-
-        // Now the backward pass to get the second derivatives M_i
-        // We'll temporarily store them in secondDerivs.col(mIdx).
-        secondDerivs(N-1, mIdx) = 0.0;
-        for (int i = N-2; i >= 0; --i) {
-            secondDerivs(i, mIdx) = z(i) - mu(i) * secondDerivs(i+1, mIdx);
-        }
+      result(q, mIdx) = val;
     }
+  }
 
-    //--------------------------------------------------------------------------------
-    // 3) Recover the *first* derivatives at each knot from the second derivatives.
-    //    For a natural cubic spline on [t_i, t_{i+1}], the polynomial is:
-    //       s_i(t) = y_i + B_i (t - t_i) + C_i (t - t_i)^2 + D_i (t - t_i)^3
-    //    with
-    //       B_i = (y_{i+1}-y_i)/h_i - h_i/6 * (2*M_i + M_{i+1})
-    //    (Here M_i = s''(t_i).)
-    //
-    //    The slope at knot i is s'(t_i).  For the interior knot i, that slope is 
-    //    typically deduced from the piece on [t_{i-1}, t_i], but for convenience 
-    //    we can pick it from [t_i, t_{i+1}] or ensure they match. They do match 
-    //    for a C^2 spline. We will just pick the forward difference formula for m_i:
-    //      m_i = B_i = (y_{i+1}-y_i)/h_i - (h_i/6)*(2*M_i + M_{i+1})
-    //--------------------------------------------------------------------------------
-
-    MatrixXd firstDerivs(N, M);
-    for (int mIdx = 0; mIdx < M; ++mIdx)
-    {
-        for (int i = 0; i < N-1; ++i) {
-            double y_i   = states(i,   mIdx);
-            double y_ip1 = states(i+1, mIdx);
-            double M_i   = secondDerivs(i,   mIdx);
-            double M_ip1 = secondDerivs(i+1, mIdx);
-            double Hi    = h[i];
-
-            double Bi = (y_ip1 - y_i)/Hi - (Hi/6.0)*(2.0*M_i + M_ip1);
-            // That is the slope that the spline takes *leaving* point i
-            firstDerivs(i, mIdx) = Bi;
-        }
-        // For the last knot i = N-1, we can match from the left interval:
-        // slope at i = B_{i-1} + h_{i-1}*derivative_of_polynomial... 
-        // But simpler is to ensure continuity with the prior segment:
-        // We can just do it from the formula on [N-2, N-1].
-        {
-            int i = N-1;
-            double y_im1  = states(i-1, mIdx);
-            double y_i    = states(i,   mIdx);
-            double M_im1  = secondDerivs(i-1, mIdx);
-            double M_i    = secondDerivs(i,   mIdx);
-            double Hi     = h[N-2];
-            double BiLast = (y_i - y_im1)/Hi - (Hi/6.0)*(2.0*M_im1 + M_i);
-            firstDerivs(i, mIdx) = BiLast;
-        }
-    }
-
-    //--------------------------------------------------------------------------------
-    // 4) For each query time, do a fast piecewise search (e.g. std::upper_bound)
-    //    to find the interval i such that knotTimes(i) <= t < knotTimes(i+1).
-    //    Then use the standard cubic Hermite basis for that interval.
-    //
-    //    On [t_i, t_{i+1}], the Hermite form is:
-    //
-    //      Let  p_i = states(i,m),   p_{i+1} = states(i+1,m)
-    //           m_i = firstDerivs(i,m),   m_{i+1} = firstDerivs(i+1,m)
-    //           h_i = knotTimes(i+1) - knotTimes(i)
-    //           u   = (t - knotTimes(i)) / h_i   in [0,1].
-    //
-    //      Then
-    //        S(u) =  p_i * H_00(u) + (h_i m_i) * H_10(u)
-    //              + p_{i+1} * H_01(u) + (h_i m_{i+1}) * H_11(u),
-    //      where
-    //        H_00(u) =  2u^3 - 3u^2 + 1
-    //        H_10(u) =      u^3 - 2u^2 + u
-    //        H_01(u) = -2u^3 + 3u^2
-    //        H_11(u) =      u^3 -     u^2
-    //--------------------------------------------------------------------------------
-
-    // For fast interval lookup, we’ll just do a pointer into knotTimes if queryTimes is sorted.
-    // If queryTimes is not guaranteed sorted, you can do an independent binary_search for each
-    // query.  Here we assume sorted queries for maximum efficiency with a single pass.
-    // If not sorted, replace this pass with a per-query std::upper_bound.
-    
-    int intervalIndex = 0; // we will move forward through the knot intervals
-    for (int q = 0; q < Q; ++q)
-    {
-        double tq = queryTimes(q);
-
-        // Advance intervalIndex as needed so that:
-        //   knotTimes(intervalIndex) <= tq < knotTimes(intervalIndex+1)
-        while (intervalIndex < N-2 && tq > knotTimes(intervalIndex+1)) {
-            intervalIndex++;
-        }
-
-        // Clamp or assume in-range
-        if (intervalIndex >= N-1) {
-            intervalIndex = N-2;  // handle boundary
-        }
-
-        double t0 = knotTimes(intervalIndex);
-        double t1 = knotTimes(intervalIndex+1);
-        double hInt = t1 - t0;
-        double u = (tq - t0) / hInt;  // in [0,1]
-
-        // Precompute Hermite basis polynomials
-        double u2 = u * u;
-        double u3 = u2 * u;
-        double H00 =  2.0*u3 - 3.0*u2 + 1.0;
-        double H10 =        u3 - 2.0*u2 + u;
-        double H01 = -2.0*u3 + 3.0*u2;
-        double H11 =        u3 -       u2;
-
-        for (int mIdx = 0; mIdx < M; ++mIdx) {
-            double p_i  = states(intervalIndex,   mIdx);
-            double p_ip1= states(intervalIndex+1, mIdx);
-            double m_i  = firstDerivs(intervalIndex,   mIdx);
-            double m_ip1= firstDerivs(intervalIndex+1, mIdx);
-
-            // S(t) = p_i*H00 + (h*m_i)*H10 + p_{i+1}*H01 + (h*m_{i+1})*H11
-            double val = p_i  * H00
-                       + (hInt*m_i)   * H10
-                       + p_ip1* H01
-                       + (hInt*m_ip1) * H11;
-
-            result(q, mIdx) = val;
-        }
-    }
-
-    return result;
+  return result;
 }
 
 inline Eigen::MatrixXd node2u(const Eigen::MatrixXd &nodes,
@@ -371,7 +329,7 @@ inline std::tuple<Eigen::MatrixXd, Eigen::VectorXd> softmax_update(
 class MBDPI
 {
 public:
-  MBDPI(const DialConfig &args, Env &env)
+  MBDPI(const DialConfig &args, UnitreeGo2Env &env)
       : args_(args), env_(env), nu_(env.action_size())
   {
     // 1) Precompute sigmas_ for i in [0..Ndiffuse-1]
@@ -620,7 +578,7 @@ public:
 
 public:
   DialConfig args_;
-  Env &env_;
+  UnitreeGo2Env &env_;
   int nu_;
 
   Eigen::VectorXd sigmas_;        // length Ndiffuse
@@ -648,8 +606,18 @@ int main()
   cfg.horizon_diffuse_factor = 0.9;
   cfg.traj_diffuse_factor = 0.5;
 
-  // 2) Create environment: e.g., 4D state, 3D action
-  Env env(/*state_size=*/4, /*action_size=*/3);
+  // Create config
+  UnitreeGo2EnvConfig go2_config;
+  go2_config.gait = "trot";
+  go2_config.randomize_tasks = false;
+  go2_config.leg_control = "torque";
+  go2_config.action_scale = 1.0; // from the snippet
+  go2_config.timestep = 0.0025;
+
+  std::string model_path = "/home/quant/dial_mpc_ws/src/dial-mpc/models/unitree_go2/mjx_scene_force.xml";
+
+  // 2) Create environment
+  UnitreeGo2Env env(go2_config, model_path);
 
   // 3) Create MBDPI
   MBDPI mbdpi(cfg, env);

@@ -1,15 +1,15 @@
+#pragma once
+
 #include <GLFW/glfw3.h>
 #include <mujoco/mujoco.h>
 #include <Eigen/Dense>
+
 #include <random>
 #include <string>
 #include <vector>
-#include <map>
-#include <cstdio>
-#include <cstring>
 #include <iostream>
-#include <cmath>
-#include <cassert>
+#include <map>
+#include <algorithm>
 
 //-----------------------------------------------------
 // Configuration structure similar to UnitreeGo2EnvConfig
@@ -39,6 +39,7 @@ struct UnitreeGo2EnvConfig
 //-----------------------------------------------------
 struct StateInfo
 {
+    std::mt19937_64 rng;
     Eigen::VectorXd pos_tar;     // (3,)
     Eigen::VectorXd vel_tar;     // (3,)
     Eigen::VectorXd ang_vel_tar; // (3,)
@@ -296,6 +297,8 @@ public:
         joint_torque_range_.col(0).setConstant(-50.0);
         joint_torque_range_.col(1).setConstant(50.0);
 
+        action_size_ = m_->nu; // 12
+
         foot_radius_ = 0.0175;
 
         // Populate the known gait phases/params:
@@ -323,7 +326,7 @@ public:
     // -----------------------------------
     // reset the environment
     // -----------------------------------
-    EnvState reset(std::mt19937 &rng_engine)
+    EnvState reset(std::mt19937_64 &rng)
     {
         mj_resetData(m_, d_);
         Eigen::VectorXd zero_dq(m_->nv);
@@ -335,6 +338,7 @@ public:
         s.data = d_;
 
         // Fill StateInfo
+        s.info.rng = rng;
         s.info.pos_tar = Eigen::Vector3d(0.282, 0.0, 0.3);
         s.info.vel_tar = Eigen::Vector3d(0.0, 0.0, 0.0);
         s.info.ang_vel_tar = Eigen::Vector3d(0.0, 0.0, 0.0);
@@ -357,8 +361,9 @@ public:
     // -----------------------------------
     // step the environment
     // -----------------------------------
-    EnvState step(EnvState state, const Eigen::VectorXd &action, std::mt19937 &rng_engine)
+    EnvState step(EnvState state, const Eigen::VectorXd &action)
     {
+        std::mt19937_64 rng = state.info.rng;
         // 1) Convert action to position or torque
         Eigen::VectorXd ctrl;
         if (config_.leg_control == "position")
@@ -379,7 +384,7 @@ public:
         // Possibly randomize velocity commands every 500 steps
         if (state.info.randomize_target && (state.info.step % 500 == 0))
         {
-            auto cmds = sample_command(rng_engine);
+            auto cmds = sample_command(rng);
             state.info.vel_tar = cmds.first;
             state.info.ang_vel_tar = cmds.second;
         }
@@ -402,6 +407,8 @@ public:
 
         // 5) check done
         bool done = checkTermination();
+
+        state.info.rng = rng;
 
         // 6) update state info (z_feet, contact, etc.)
         state.info.step += 1;
@@ -456,6 +463,8 @@ public:
     // --------------------------------------------------
     double dt() const { return config_.timestep; }
 
+    int action_size() const { return action_size_; }
+
 private:
     UnitreeGo2EnvConfig config_;
 
@@ -480,6 +489,8 @@ private:
     std::map<std::string, Eigen::Vector4d> kGaitPhases_;
     // Gait param table: (duty_ratio, cadence, amplitude)
     std::map<std::string, Eigen::Vector3d> kGaitParams_;
+
+    int action_size_;
 
     // --------------------------------------------------
     // Implementation of the exact Python get_foot_step
@@ -745,7 +756,7 @@ private:
     // --------------------------------------------------
     // sample_command: replicate python random
     // --------------------------------------------------
-    std::pair<Eigen::Vector3d, Eigen::Vector3d> sample_command(std::mt19937 &rng)
+    std::pair<Eigen::Vector3d, Eigen::Vector3d> sample_command(std::mt19937_64 &rng)
     {
         std::uniform_real_distribution<double> dist_lin_x(-1.5, 1.5);
         std::uniform_real_distribution<double> dist_lin_y(-0.5, 0.5);
@@ -779,200 +790,3 @@ private:
         kGaitParams_["gallop"] = (Eigen::Vector3d() << 0.3, 3.5, 0.10).finished();
     }
 };
-
-// MuJoCo data structures
-mjModel *m = NULL; // MuJoCo model
-mjData *d = NULL;  // MuJoCo data
-mjvCamera cam;     // abstract camera
-mjvOption opt;     // visualization options
-mjvScene scn;      // abstract scene
-mjrContext con;    // custom GPU context
-
-// mouse interaction
-bool button_left = false;
-bool button_middle = false;
-bool button_right = false;
-double lastx = 0;
-double lasty = 0;
-
-// keyboard callback
-void keyboard(GLFWwindow *window, int key, int scancode, int act, int mods)
-{
-    // backspace: reset simulation
-    if (act == GLFW_PRESS && key == GLFW_KEY_BACKSPACE)
-    {
-        mj_resetData(m, d);
-        mj_forward(m, d);
-    }
-}
-
-// mouse button callback
-void mouse_button(GLFWwindow *window, int button, int act, int mods)
-{
-    // update button state
-    button_left = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
-    button_middle = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
-    button_right = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
-
-    // update mouse position
-    glfwGetCursorPos(window, &lastx, &lasty);
-}
-
-// mouse move callback
-void mouse_move(GLFWwindow *window, double xpos, double ypos)
-{
-    // no buttons down: nothing to do
-    if (!button_left && !button_middle && !button_right)
-    {
-        return;
-    }
-
-    // compute mouse displacement, save
-    double dx = xpos - lastx;
-    double dy = ypos - lasty;
-    lastx = xpos;
-    lasty = ypos;
-
-    // get current window size
-    int width, height;
-    glfwGetWindowSize(window, &width, &height);
-
-    // get shift key state
-    bool mod_shift = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-                      glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-
-    // determine action based on mouse button
-    mjtMouse action;
-    if (button_right)
-    {
-        action = mod_shift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V;
-    }
-    else if (button_left)
-    {
-        action = mod_shift ? mjMOUSE_ROTATE_H : mjMOUSE_ROTATE_V;
-    }
-    else
-    {
-        action = mjMOUSE_ZOOM;
-    }
-
-    // move camera
-    mjv_moveCamera(m, action, dx / height, dy / height, &scn, &cam);
-}
-
-// scroll callback
-void scroll(GLFWwindow *window, double xoffset, double yoffset)
-{
-    // emulate vertical mouse motion = 5% of window height
-    mjv_moveCamera(m, mjMOUSE_ZOOM, 0, -0.05 * yoffset, &scn, &cam);
-}
-
-// main function
-int main(int argc, const char **argv)
-{
-    // Create config
-    UnitreeGo2EnvConfig config;
-    config.gait = "trot";
-    config.randomize_tasks = false;
-    config.leg_control = "torque";
-    config.action_scale = 1.0; // from the snippet
-    config.timestep = 0.0025;
-
-    std::string model_path = "/home/quant/dial_mpc_ws/src/dial-mpc/models/unitree_go2/mjx_scene_force.xml";
-
-    // Create environment
-    UnitreeGo2Env env(config, model_path);
-
-    // RNG
-    std::random_device rd;
-    std::mt19937 rng_engine(rd());
-
-    // reset
-    EnvState state = env.reset(rng_engine);
-
-    m = env.model();
-    d = env.data();
-
-    // init GLFW
-    if (!glfwInit())
-    {
-        mju_error("Could not initialize GLFW");
-    }
-
-    // create window, make OpenGL context current, request v-sync
-    GLFWwindow *window = glfwCreateWindow(1200, 900, "Demo", NULL, NULL);
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
-
-    // initialize visualization data structures
-    mjv_defaultCamera(&cam);
-    mjv_defaultOption(&opt);
-    mjv_defaultScene(&scn);
-    mjr_defaultContext(&con);
-
-    // create scene and context
-    mjv_makeScene(m, &scn, 2000);
-    mjr_makeContext(m, &con, mjFONTSCALE_150);
-
-    // install GLFW mouse and keyboard callbacks
-    glfwSetKeyCallback(window, keyboard);
-    glfwSetCursorPosCallback(window, mouse_move);
-    glfwSetMouseButtonCallback(window, mouse_button);
-    glfwSetScrollCallback(window, scroll);
-
-    int i = 0;
-    // run main loop, target real-time simulation and 60 fps rendering
-    while (!glfwWindowShouldClose(window))
-    {
-        // advance interactive simulation for 1/60 sec
-        //  Assuming MuJoCo can simulate faster than real-time, which it usually can,
-        //  this loop will finish on time for the next frame to be rendered at 60 fps.
-        //  Otherwise add a cpu timer and exit this loop when it is time to render.
-        mjtNum simstart = d->time;
-        // example: random action (12-dim)
-        Eigen::VectorXd action(12);
-        action.setZero(); // or random
-        while (d->time - simstart < 1.0 / 60.0)
-        {
-            state = env.step(state, action, rng_engine);
-        }
-
-        // get framebuffer viewport
-        mjrRect viewport = {0, 0, 0, 0};
-        glfwGetFramebufferSize(window, &viewport.width, &viewport.height);
-
-        // update scene and render
-        mjv_updateScene(m, d, &opt, NULL, &cam, mjCAT_ALL, &scn);
-        mjr_render(viewport, &scn, &con);
-
-        // swap OpenGL buffers (blocking call due to v-sync)
-        glfwSwapBuffers(window);
-
-        // process pending GUI events, call GLFW callbacks
-        glfwPollEvents();
-
-        if (state.done)
-        {
-            std::cout << "Terminated at step " << i
-                      << " reward = " << state.reward << std::endl;
-            break;
-        }
-
-        ++i;
-    }
-
-    // free visualization storage
-    mjv_freeScene(&scn);
-    mjr_freeContext(&con);
-
-    // // free MuJoCo model and data
-    // mj_deleteData(d);
-    // mj_deleteModel(m);
-
-    // terminate GLFW (crashes with Linux NVidia drivers)
-#if defined(__APPLE__) || defined(_WIN32)
-    glfwTerminate();
-#endif
-
-    return 1;
-}

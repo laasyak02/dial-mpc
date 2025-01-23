@@ -11,8 +11,10 @@ find_package(glfw3 REQUIRED)
 find_package(Threads REQUIRED)
 include_directories(${EIGEN3_INCLUDE_DIRS} ${mujoco_INCLUDE_DIRS})
 
-add_executable(dial_mpc src/dial-core3.cpp)
+add_executable(dial_mpc src/dial-core-test.cpp)
 target_link_libraries(dial_mpc mujoco glfw3 Threads::Threads ${CMAKE_DL_LIBS})
+target_include_directories(dial_mpc PRIVATE ${PROJECT_SOURCE_DIR}/include)
 
-add_executable(go2_env src/UnitreeGo2Env.cpp)
-target_link_libraries(go2_env mujoco glfw3 Threads::Threads ${CMAKE_DL_LIBS})
+add_executable(go2_env_test src/unitree-go2-env-test.cpp)
+target_link_libraries(go2_env_test mujoco glfw Threads::Threads ${CMAKE_DL_LIBS})
+target_include_directories(go2_env_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
