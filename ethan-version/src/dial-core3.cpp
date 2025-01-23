@@ -3,6 +3,7 @@
 #include <random>
 #include <cmath>
 #include <chrono>
+#include <tuple>
 #include <unsupported/Eigen/Splines>
 #include <Eigen/Dense>
 
@@ -95,101 +96,190 @@ private:
   int action_size_;
 };
 
-//////////////////////////////////////////////////////////////
-// Quadratic spline interpolation (k=2), matching Python's
-// InterpolatedUnivariateSpline(..., k=2)
-//////////////////////////////////////////////////////////////
-inline Eigen::Spline<double, 1> createQuadraticSpline(const Eigen::VectorXd &x, const Eigen::VectorXd &y)
+// //////////////////////////////////////////////////////////////
+// // Quadratic spline interpolation (k=2), matching Python's
+// // InterpolatedUnivariateSpline(..., k=2)
+// //////////////////////////////////////////////////////////////
+// inline Eigen::Spline<double, 1> createQuadraticSpline(const Eigen::VectorXd &x, const Eigen::VectorXd &y)
+// {
+//   Eigen::Matrix<double, 1, Eigen::Dynamic> points(1, y.size());
+//   for (int i = 0; i < y.size(); i++)
+//   {
+//     points(0, i) = y(i);
+//   }
+//   // Rescale x to [0,1]
+//   double xmin = x.minCoeff();
+//   double xmax = x.maxCoeff();
+//   double L = xmax - xmin;
+//   Eigen::VectorXd t = (x.array() - xmin) / L;
+
+//   // Fit order=2
+//   Eigen::SplineFitting<Eigen::Spline<double, 1>> fitting;
+//   Eigen::Spline<double, 1> spline = fitting.Interpolate(points, /*splineOrder=*/y.size() - 1, t);
+//   return spline;
+// }
+
+// inline Eigen::VectorXd evaluateQuadraticSpline(const Eigen::Spline<double, 1> &spline,
+//                                                const Eigen::VectorXd &x_original,
+//                                                double xmin,
+//                                                double xmax)
+// {
+//   double L = xmax - xmin;
+//   Eigen::VectorXd out(x_original.size());
+//   for (int i = 0; i < x_original.size(); i++)
+//   {
+//     double t = (x_original(i) - xmin) / L;
+//     Eigen::Matrix<double, 1, 1> val = spline(t);
+//     out(i) = val(0, 0);
+//   }
+//   return out;
+// }
+
+// // node2u: from (Hnode+1, nu) controls at times "step_nodes_" to
+// //          (Hsample+1, nu) controls at times "step_us_"
+// inline Eigen::MatrixXd node2u(const Eigen::MatrixXd &nodes,
+//                               const Eigen::VectorXd &step_nodes,
+//                               const Eigen::VectorXd &step_us)
+// {
+//   // Output: (Hsample+1, nu)
+//   Eigen::MatrixXd us(step_us.size(), nodes.cols());
+//   for (int dim = 0; dim < nodes.cols(); dim++)
+//   {
+//     Eigen::VectorXd yvals = nodes.col(dim);
+//     Eigen::Spline<double, 1> spline = createQuadraticSpline(step_nodes, yvals);
+//     double xmin = step_nodes.minCoeff();
+//     double xmax = step_nodes.maxCoeff();
+//     Eigen::VectorXd result = evaluateQuadraticSpline(spline, step_us, xmin, xmax);
+//     us.col(dim) = result;
+//   }
+//   return us;
+// }
+
+// // u2node: from (Hsample+1, nu) controls at times "step_us_" to
+// //          (Hnode+1, nu) controls at times "step_nodes_"
+// inline Eigen::MatrixXd u2node(const Eigen::MatrixXd &us,
+//                               const Eigen::VectorXd &step_us,
+//                               const Eigen::VectorXd &step_nodes)
+// {
+//   // Output: (Hnode+1, nu)
+//   Eigen::MatrixXd nodes(step_nodes.size(), us.cols());
+//   for (int dim = 0; dim < us.cols(); dim++)
+//   {
+//     Eigen::VectorXd yvals = us.col(dim);
+//     Eigen::Spline<double, 1> spline = createQuadraticSpline(step_us, yvals);
+//     double xmin = step_us.minCoeff();
+//     double xmax = step_us.maxCoeff();
+//     Eigen::VectorXd result = evaluateQuadraticSpline(spline, step_nodes, xmin, xmax);
+//     nodes.col(dim) = result;
+//   }
+//   return nodes;
+// }
+
+inline Eigen::Spline<double, 1>
+createQuadraticSpline(const Eigen::VectorXd &x, // domain
+                      const Eigen::VectorXd &y) // range
 {
-  std::cout << "createQuadraticSpline: x.size() = " << x.size() << ", y.size() = " << y.size() << std::endl;
-  Eigen::Matrix<double, 1, Eigen::Dynamic> points(1, y.size());
-  for (int i = 0; i < y.size(); i++)
-  {
-    points(0, i) = y(i);
+  const int N = x.size();
+  if (N < 2) {
+    // Edge case: not enough points to do a 2nd order spline.
+    // You might throw an error or create a degenerate "constant" function.
+    // For example, handle N=1 or N=0 gracefully:
+    // ...
   }
-  // Rescale x to [0,1]
+
+  // 1) Build "points" as 1 x N
+  Eigen::Matrix<double, 1, Eigen::Dynamic> points(1, N);
+  for (int i=0; i<N; i++){
+    points(0,i) = y(i);
+  }
+
+  // 2) Scale x -> [0,1]
   double xmin = x.minCoeff();
   double xmax = x.maxCoeff();
-  double L = xmax - xmin;
-  Eigen::VectorXd t = (x.array() - xmin) / L;
+  double L = (xmax > xmin)? (xmax - xmin) : 1.0; // avoid /0
 
-  // Fit order=2
-  Eigen::SplineFitting<Eigen::Spline<double, 1>> fitting;
-  auto spline = fitting.Interpolate(points, /*splineOrder=*/y.size() - 1, t);
-  return spline;
-}
-
-inline Eigen::VectorXd evaluateQuadraticSpline(const Eigen::Spline<double, 1> &spline,
-                                               const Eigen::VectorXd &x_original,
-                                               double xmin,
-                                               double xmax)
-{
-  double L = xmax - xmin;
-  Eigen::VectorXd out(x_original.size());
-  for (int i = 0; i < x_original.size(); i++)
-  {
-    double t = (x_original(i) - xmin) / L;
-    Eigen::Matrix<double, 1, 1> val = spline(t);
-    out(i) = val(0, 0);
+  Eigen::RowVectorXd t_row(N);
+  for (int i=0; i<N; i++){
+    t_row(i) = (x(i) - xmin) / L;
   }
-  std::cout << "evaluateQuadraticSpline: out.size() = " << out.size() << std::endl;
-  return out;
+
+  // 3) For a 2nd-order spline, let's set:
+  //    numKnots = max(0, N - 2).
+  int numKnots = std::max(0, N - 2);
+
+  // 4) Fit
+  return Eigen::SplineFitting<Eigen::Spline<double,1>>::Interpolate(
+      points,
+      numKnots,
+      t_row
+  );
 }
 
-// node2u: from (Hnode+1, nu) controls at times "step_nodes_" to
-//          (Hsample+1, nu) controls at times "step_us_"
+inline double evaluateSpline(const Eigen::Spline<double,1> &spline,
+                             double xVal, double xMin, double xMax)
+{
+  double L = (xMax > xMin)? (xMax - xMin) : 1.0;
+  double t = (xVal - xMin) / L;
+  Eigen::Matrix<double,1,1> val = spline(t);
+  return val(0,0);
+}
+
 inline Eigen::MatrixXd node2u(const Eigen::MatrixXd &nodes,
                               const Eigen::VectorXd &step_nodes,
                               const Eigen::VectorXd &step_us)
 {
-  std::cout << "node2u: nodes.rows() = " << nodes.rows() << ", nodes.cols() = " << nodes.cols() << std::endl;
-  std::cout << "node2u: step_nodes.size() = " << step_nodes.size() << ", step_us.size() = " << step_us.size() << std::endl;
-  // Output: (Hsample+1, nu)
+  // nodes has shape (Hnode+1, nu)
+  // We'll produce us with shape (Hsample+1, nu)
+
   Eigen::MatrixXd us(step_us.size(), nodes.cols());
-  for (int dim = 0; dim < nodes.cols(); dim++)
-  {
+  double xmin = step_nodes.minCoeff();
+  double xmax = step_nodes.maxCoeff();
+
+  for(int dim=0; dim < nodes.cols(); dim++){
+    // For this dimension, get the y-values
     Eigen::VectorXd yvals = nodes.col(dim);
-    std::cout << "node2u: yvals.size() = " << yvals.size() << std::endl;
-    Eigen::Spline<double, 1> spline = createQuadraticSpline(step_nodes, yvals);
-    double xmin = step_nodes.minCoeff();
-    double xmax = step_nodes.maxCoeff();
-    Eigen::VectorXd result = evaluateQuadraticSpline(spline, step_us, xmin, xmax);
-    std::cout << "node2u: result.size() = " << result.size() << std::endl;
-    us.col(dim) = result;
+    // Create spline
+    Eigen::Spline<double,1> spline = createQuadraticSpline(step_nodes, yvals);
+
+    // Evaluate
+    for(int i=0; i<step_us.size(); i++){
+      double val = evaluateSpline(spline, step_us(i), xmin, xmax);
+      us(i, dim) = val;
+    }
   }
-  std::cout << "node2u: us.rows() = " << us.rows() << ", us.cols() = " << us.cols() << std::endl;
   return us;
 }
 
-// u2node: from (Hsample+1, nu) controls at times "step_us_" to
-//          (Hnode+1, nu) controls at times "step_nodes_"
 inline Eigen::MatrixXd u2node(const Eigen::MatrixXd &us,
                               const Eigen::VectorXd &step_us,
                               const Eigen::VectorXd &step_nodes)
 {
-  std::cout << "u2node: us.rows() = " << us.rows() << ", us.cols() = " << us.cols() << std::endl;
-  std::cout << "u2node: step_us.size() = " << step_us.size() << ", step_nodes.size() = " << step_nodes.size() << std::endl;
-  // Output: (Hnode+1, nu)
+  // us has shape (Hsample+1, nu)
+  // We'll produce nodes with shape (Hnode+1, nu)
+
   Eigen::MatrixXd nodes(step_nodes.size(), us.cols());
-  for (int dim = 0; dim < us.cols(); dim++)
-  {
+  double xmin = step_us.minCoeff();
+  double xmax = step_us.maxCoeff();
+
+  for(int dim=0; dim < us.cols(); dim++){
+    // For this dimension, get the y-values
     Eigen::VectorXd yvals = us.col(dim);
-    std::cout << "u2node: yvals.size() = " << yvals.size() << std::endl;
-    Eigen::Spline<double, 1> spline = createQuadraticSpline(step_us, yvals);
-    double xmin = step_us.minCoeff();
-    double xmax = step_us.maxCoeff();
-    Eigen::VectorXd result = evaluateQuadraticSpline(spline, step_nodes, xmin, xmax);
-    std::cout << "u2node: result.size() = " << result.size() << std::endl;
-    nodes.col(dim) = result;
+    // Create spline
+    Eigen::Spline<double,1> spline = createQuadraticSpline(step_us, yvals);
+
+    // Evaluate
+    for(int i=0; i<step_nodes.size(); i++){
+      double val = evaluateSpline(spline, step_nodes(i), xmin, xmax);
+      nodes(i, dim) = val;
+    }
   }
-  std::cout << "u2node: nodes.rows() = " << nodes.rows() << ", nodes.cols() = " << nodes.cols() << std::endl;
   return nodes;
 }
 
 //////////////////////////////////////////////////////////////
 // Softmax update (the only update_method from Python code: "mppi")
 //////////////////////////////////////////////////////////////
-inline std::pair<Eigen::MatrixXd, Eigen::VectorXd> softmax_update(
+inline std::tuple<Eigen::MatrixXd, Eigen::VectorXd> softmax_update(
     const Eigen::VectorXd &weights,
     const std::vector<Eigen::MatrixXd> &Y0s,
     const Eigen::VectorXd &sigma,
@@ -201,7 +291,7 @@ inline std::pair<Eigen::MatrixXd, Eigen::VectorXd> softmax_update(
   {
     Ybar += weights(i) * Y0s[i];
   }
-  return std::make_pair(Ybar, sigma); // new_sigma = sigma (unchanged)
+  return std::make_tuple(Ybar, sigma); // new_sigma = sigma (unchanged)
 }
 
 //////////////////////////////////////////////////////////////
@@ -217,14 +307,14 @@ public:
     double sigma0 = 1e-2, sigma1 = 1.0;
     double A = sigma0;
     double B = std::log(sigma1 / sigma0) / args_.Ndiffuse;
-    sigmas_.resize(args_.Ndiffuse);
+    sigmas_ = Eigen::VectorXd::Zero(args_.Ndiffuse);
     for (int i = 0; i < args_.Ndiffuse; i++)
     {
       sigmas_(i) = A * std::exp(B * i);
     }
 
     // 2) sigma_control_ = horizon_diffuse_factor^( [Hnode..0] ) (in Python, reversed)
-    sigma_control_.resize(args_.Hnode + 1);
+    sigma_control_ = Eigen::VectorXd::Zero(args_.Hnode + 1);
     for (int i = 0; i <= args_.Hnode; i++)
     {
       // reversed exponent, i.e. sigma_control[0] = horizon_diffuse_factor^Hnode
@@ -234,8 +324,8 @@ public:
 
     // 3) Create step_us_, step_nodes_
     double tmax = args_.ctrl_dt * args_.Hsample;
-    step_us_.resize(args_.Hsample + 1);
-    step_nodes_.resize(args_.Hnode + 1);
+    step_us_ = Eigen::VectorXd::Zero(args_.Hsample + 1);
+    step_nodes_ = Eigen::VectorXd::Zero(args_.Hnode + 1);
     for (int i = 0; i <= args_.Hsample; i++)
     {
       step_us_(i) = (double)i / (double)args_.Hsample * tmax;
@@ -249,7 +339,7 @@ public:
   // rollout_us: replicate exactly the Python version.
   // Return the entire time-sequence of rewards (length = us.rows())
   // plus a vector of pipeline states if needed.
-  std::pair<Eigen::VectorXd, std::vector<EnvState>>
+  std::tuple<Eigen::VectorXd, std::vector<EnvState>>
   rollout_us(const EnvState &state, const Eigen::MatrixXd &us)
   {
     int T = us.rows();
@@ -265,7 +355,7 @@ public:
       rewards(t) = cur.reward;
       pipeline_states.push_back(cur);
     }
-    return std::make_pair(rewards, pipeline_states);
+    return std::make_tuple(rewards, pipeline_states);
   }
 
   // Vectorized version: for each sample in all_Y0s, convert to "us", then rollout
@@ -274,9 +364,11 @@ public:
   {
     std::vector<Eigen::VectorXd> rews_batch;
     rews_batch.reserve(all_us.size());
-    for (auto &us : all_us)
+    for (const Eigen::MatrixXd &us : all_us)
     {
-      auto [rews, _] = rollout_us(state, us);
+      std::tuple<Eigen::VectorXd, std::vector<EnvState>> res_rollout = rollout_us(state, us);
+      Eigen::VectorXd rews = std::get<0>(res_rollout);
+      std::vector<EnvState> pipeline_states = std::get<1>(res_rollout);
       rews_batch.push_back(rews);
     }
     return rews_batch;
@@ -325,7 +417,7 @@ public:
     all_Y0s.push_back(Ybar_i);
 
     // 2) Clip to [-1,1]
-    for (auto &mat : all_Y0s)
+    for (Eigen::MatrixXd &mat : all_Y0s)
     {
       for (int r = 0; r < mat.rows(); r++)
       {
@@ -392,7 +484,9 @@ public:
     Eigen::VectorXd weights = exps / sum_exps; // length = Nsample+1
 
     // 8) Ybar = sum_n w(n)*Y0s[n]
-    auto [Ybar, new_sigma] = softmax_update(weights, all_Y0s, noise_scale, Ybar_i);
+    std::tuple<Eigen::MatrixXd, Eigen::VectorXd> res_softmax = softmax_update(weights, all_Y0s, noise_scale, Ybar_i);
+    Eigen::MatrixXd Ybar = std::get<0>(res_softmax);
+    Eigen::VectorXd new_sigma = std::get<1>(res_softmax);
 
     // 9) Weighted qbar, qdbar, xbar placeholders
     // The Python code does qbar, qdbar, xbar from pipeline states.
@@ -409,9 +503,6 @@ public:
     info.xbar = xbar;
     info.new_noise_scale = new_sigma;
 
-    std::cout << "reverse_once: Ybar.rows() = " << Ybar.rows() << ", Ybar.cols() = " << Ybar.cols() << std::endl;
-    std::cout << "reverse_once: info.rews.size() = " << info.rews.size() << std::endl;
-
     return std::make_tuple(Ybar, info);
   }
 
@@ -426,7 +517,11 @@ public:
     for (int i = args_.Ndiffuse - 1; i >= 1; i--)
     {
       Eigen::VectorXd scale = Eigen::VectorXd::Constant(args_.Hnode + 1, sigmas_(i));
-      auto [newY, info] = reverse_once(state, rng, Yi, scale);
+      std::tuple<Eigen::MatrixXd, ReverseInfo> res_reverse = reverse_once(state, rng, Yi, scale);
+
+      Eigen::MatrixXd newY = std::get<0>(res_reverse);
+      ReverseInfo info = std::get<1>(res_reverse);
+
       Yi = newY;
     }
     return Yi;
@@ -536,7 +631,9 @@ int main()
         factor(h) = mbdpi.sigma_control_(h) * std::pow(cfg.traj_diffuse_factor, (double)i);
       }
       // call reverse_once
-      auto [newY, info] = mbdpi.reverse_once(next_state, rng, Y0, factor);
+      std::tuple<Eigen::MatrixXd, MBDPI::ReverseInfo> res_reverse = mbdpi.reverse_once(next_state, rng, Y0, factor);
+      Eigen::MatrixXd newY = std::get<0>(res_reverse);
+      MBDPI::ReverseInfo info = std::get<1>(res_reverse);
       Y0 = newY;
       // info.rews is the distribution of sample mean rewards, you can log if desired.
     }
@@ -546,7 +643,7 @@ int main()
 
   // Summarize
   double sum_rew = 0.0;
-  for (auto r : rews)
+  for (double r : rews)
     sum_rew += r;
   double avg_rew = sum_rew / (double)rews.size();
   std::cout << "Average reward = " << avg_rew << std::endl;

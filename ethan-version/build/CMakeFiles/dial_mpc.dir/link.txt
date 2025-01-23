@@ -1,1 +1,0 @@
-/usr/bin/c++ "CMakeFiles/dial_mpc.dir/src/dial-core3.cpp.o" -o dial_mpc

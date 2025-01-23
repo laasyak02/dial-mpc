@@ -1,3 +1,0 @@
-/home/quant/dial_mpc_ws/src/dial-mpc/ethan-version/build/CMakeFiles/dial_mpc.dir
-/home/quant/dial_mpc_ws/src/dial-mpc/ethan-version/build/CMakeFiles/edit_cache.dir
-/home/quant/dial_mpc_ws/src/dial-mpc/ethan-version/build/CMakeFiles/rebuild_cache.dir
