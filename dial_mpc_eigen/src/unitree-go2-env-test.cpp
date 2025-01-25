@@ -185,9 +185,9 @@ int main(int argc, const char **argv)
     mjv_freeScene(&scn);
     mjr_freeContext(&con);
 
-    // // free MuJoCo model and data
-    // mj_deleteData(d);
-    // mj_deleteModel(m);
+    // free MuJoCo model and data
+    mj_deleteData(d);
+    mj_deleteModel(m);
 
     // terminate GLFW (crashes with Linux NVidia drivers)
 #if defined(__APPLE__) || defined(_WIN32)

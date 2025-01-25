@@ -5,11 +5,24 @@
 #include <Eigen/Dense>
 
 #include <random>
+#include <time.h>
+#include <thread>
+
 #include <string>
 #include <vector>
 #include <iostream>
 #include <map>
 #include <algorithm>
+
+/* Thread-safe function that returns a random number between min and max (inclusive).
+This function takes ~142% the time that calling rand() would take. For this extra
+cost you get a better uniform distribution and thread-safety. */
+double doubleRand(const double & min, const double & max) {
+    static thread_local std::mt19937* generator = nullptr;
+    if (!generator) generator = new std::mt19937(std::chrono::system_clock::now().time_since_epoch().count() + std::hash<std::thread::id>()(std::this_thread::get_id()));
+    std::uniform_real_distribution<double> distribution(min, max);
+    return distribution(*generator);
+}
 
 //-----------------------------------------------------
 // Configuration structure similar to UnitreeGo2EnvConfig
@@ -317,10 +330,10 @@ public:
 
     ~UnitreeGo2Env()
     {
-        if (d_)
-            mj_deleteData(d_);
-        if (m_)
-            mj_deleteModel(m_);
+        // if (d_)
+        //     mj_deleteData(d_);
+        // if (m_)
+        //     mj_deleteModel(m_);
     }
 
     // -----------------------------------
@@ -464,6 +477,10 @@ public:
     double dt() const { return config_.timestep; }
 
     int action_size() const { return action_size_; }
+
+    Eigen::Matrix<double, 12, 2> joint_range() const { return joint_range_; }
+
+    Eigen::Matrix<double, 12, 2> joint_torque_range() const { return joint_torque_range_; }
 
 private:
     UnitreeGo2EnvConfig config_;
