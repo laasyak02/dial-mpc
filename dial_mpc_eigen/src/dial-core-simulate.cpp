@@ -36,9 +36,9 @@ double curr_time = 0.0;
 int main()
 {
     cfg.seed = 0;
-    cfg.Hsample = 25;
-    cfg.Hnode = 5;
-    cfg.Nsample = 512;
+    cfg.Hsample = 16;
+    cfg.Hnode = 4;
+    cfg.Nsample = 2048;
     cfg.Ndiffuse = 2;
     cfg.Ndiffuse_init = 10;
     cfg.temp_sample = 0.05;
@@ -48,13 +48,13 @@ int main()
     cfg.traj_diffuse_factor = 0.5;
 
     go2_config.kp = 30.0;
-    go2_config.kd = 0.65;
+    go2_config.kd = 1.0;
     go2_config.action_scale = 1.0;
-    go2_config.default_vx = 1.0;
+    go2_config.default_vx = 0.8;
     go2_config.default_vy = 0.0;
     go2_config.default_vyaw = 0.0;
     go2_config.ramp_up_time = 1.0;
-    go2_config.gait = "trot";
+    go2_config.gait = "stand";
     go2_config.timestep = 0.0025;
     go2_config.randomize_tasks = false;
     go2_config.leg_control = "torque";
@@ -203,6 +203,8 @@ void loop(const mjModel *m, mjData *d)
 
     // Convert action to torque
     Eigen::VectorXd tau = act2tau(action, m, d);
+
+    std::cout << "tau = " << tau.transpose() << std::endl;
 
     // Set the control
     for (int i = 0; i < m->nu; i++)

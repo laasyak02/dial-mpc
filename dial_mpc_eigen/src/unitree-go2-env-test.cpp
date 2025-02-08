@@ -92,11 +92,17 @@ int main(int argc, const char **argv)
 {
     // Create config
     UnitreeGo2EnvConfig config;
-    config.gait = "trot";
+    config.kp = 30.0;
+    config.kd = 0.65;
+    config.action_scale = 1.0;
+    config.default_vx = 0.0;
+    config.default_vy = 0.0;
+    config.default_vyaw = 0.0;
+    config.ramp_up_time = 1.0;
+    config.gait = "stand";
+    config.timestep = 0.0025;
     config.randomize_tasks = false;
     config.leg_control = "torque";
-    config.action_scale = 1.0; // from the snippet
-    config.timestep = 0.0025;
 
     std::string model_path = "/home/quant/dial_mpc_ws/src/dial-mpc/models/unitree_go2/mjx_scene_force.xml";
 

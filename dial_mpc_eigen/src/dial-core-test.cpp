@@ -5,30 +5,28 @@
 //////////////////////////////////////////////////////////////
 int main()
 {
-  // 1) Build config
   DialConfig cfg;
   cfg.seed = 0;
-  cfg.Hsample = 16;
-  cfg.Hnode = 4;
-  cfg.Nsample = 20;
+  cfg.Hsample = 25;
+  cfg.Hnode = 5;
+  cfg.Nsample = 2048;
   cfg.Ndiffuse = 2;
   cfg.Ndiffuse_init = 10;
   cfg.temp_sample = 0.05;
-  cfg.n_steps = 400; // shorter demonstration
+  cfg.n_steps = 400;
   cfg.ctrl_dt = 0.02;
   cfg.horizon_diffuse_factor = 0.9;
   cfg.traj_diffuse_factor = 0.5;
 
-  // Create config
   UnitreeGo2EnvConfig go2_config;
   go2_config.kp = 30.0;
-  go2_config.kd = 0.0;
+  go2_config.kd = 0.65;
   go2_config.action_scale = 1.0;
-  go2_config.default_vx = 1.0;
+  go2_config.default_vx = 0.8;
   go2_config.default_vy = 0.0;
   go2_config.default_vyaw = 0.0;
-  go2_config.ramp_up_time = 2.0;
-  go2_config.gait = "trot";
+  go2_config.ramp_up_time = 1.0;
+  go2_config.gait = "stand";
   go2_config.timestep = 0.0025;
   go2_config.randomize_tasks = false;
   go2_config.leg_control = "torque";

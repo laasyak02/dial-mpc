@@ -17,9 +17,11 @@
 /* Thread-safe function that returns a random number between min and max (inclusive).
 This function takes ~142% the time that calling rand() would take. For this extra
 cost you get a better uniform distribution and thread-safety. */
-double doubleRand(const double & min, const double & max) {
-    static thread_local std::mt19937* generator = nullptr;
-    if (!generator) generator = new std::mt19937(std::chrono::system_clock::now().time_since_epoch().count() + std::hash<std::thread::id>()(std::this_thread::get_id()));
+double doubleRand(const double &min, const double &max)
+{
+    static thread_local std::mt19937 *generator = nullptr;
+    if (!generator)
+        generator = new std::mt19937(std::chrono::system_clock::now().time_since_epoch().count() + std::hash<std::thread::id>()(std::this_thread::get_id()));
     std::uniform_real_distribution<double> distribution(min, max);
     return distribution(*generator);
 }
@@ -30,14 +32,14 @@ double doubleRand(const double & min, const double & max) {
 struct UnitreeGo2EnvConfig
 {
     double kp = 30.0;
-    double kd = 0.0;
+    double kd = 1.0;
     double action_scale = 1.0; // newly added to match 'act2joint' scale
 
-    double default_vx = 1.0;
+    double default_vx = 0.0;
     double default_vy = 0.0;
     double default_vyaw = 0.0;
-    double ramp_up_time = 2.0;
-    std::string gait = "trot";
+    double ramp_up_time = 1.0;
+    std::string gait = "stand";
     double timestep = 0.0025;
 
     // If true, the environment will randomize targets
@@ -58,11 +60,7 @@ struct StateInfo
     Eigen::VectorXd ang_vel_tar; // (3,)
     double yaw_tar;
     int step;
-    Eigen::VectorXd z_feet;     // (4,) foot heights
-    Eigen::VectorXd z_feet_tar; // (4,) desired foot heights
     bool randomize_target;
-    Eigen::VectorXi last_contact;  // (4,) boolean in 0/1
-    Eigen::VectorXd feet_air_time; // (4,) how long each foot is in air
 };
 
 //-----------------------------------------------------
@@ -73,9 +71,8 @@ struct EnvState
     mjModel *model = nullptr;
     mjData *data = nullptr;
 
-    Eigen::VectorXd obs; // observation
-    double reward;       // reward
-    bool done;           // termination flag
+    double reward; // reward
+    bool done;     // termination flag
     StateInfo info;
 };
 
@@ -161,19 +158,9 @@ Eigen::VectorXd getFootStep(double duty_ratio, double cadence, double amplitude,
 }
 
 //-----------------------------------------------------
-// Convert a quaternion to a 3x3 rotation matrix
-//-----------------------------------------------------
-Eigen::Matrix3d quatToMat(const double *quat)
-{
-    // MuJoCo quaternion layout: w, x, y, z
-    Eigen::Quaterniond q(quat[0], quat[1], quat[2], quat[3]);
-    return q.toRotationMatrix();
-}
-
-//-----------------------------------------------------
 // Convert quaternion to yaw angle (Z euler)
 //-----------------------------------------------------
-double quatToYaw(const double *quat)
+double quatToYaw(Eigen::Vector4d quat)
 {
     Eigen::Quaterniond q(quat[0], quat[1], quat[2], quat[3]);
     // eulerAngles(2,1,0) returns (Z, Y, X)
@@ -182,14 +169,44 @@ double quatToYaw(const double *quat)
     return yaw;
 }
 
+Eigen::Vector4d quat_inv(const Eigen::Vector4d &q)
+{
+    Eigen::Vector4d q_inv = q;
+    q_inv.segment(1, 3) *= -1;
+    return q_inv;
+}
+
+Eigen::Vector3d rotate(const Eigen::Vector3d &v, const Eigen::Vector4d &q)
+{
+    double s = q[0];
+    Eigen::Vector3d u = q.segment(1, 3);
+    Eigen::Vector3d r = 2 * (u.dot(v) * u) + (s * s - u.dot(u)) * v;
+    r = r.eval() + 2 * s * u.cross(v);
+    return r;
+}
+
+Eigen::Vector3d inv_rotate(const Eigen::Vector3d &v, const Eigen::Vector4d &q)
+{
+    Eigen::Vector4d q_inv = quat_inv(q);
+    return rotate(v, q_inv);
+}
+
 //-----------------------------------------------------
-// Rotate a global velocity into body frame: v_body = R^T * v_global
+// Rotate vel_global by inverse of body_quat
 //-----------------------------------------------------
 Eigen::Vector3d globalToBodyVelocity(const Eigen::Vector3d &vel_global,
-                                     const double *body_quat)
+                                     const Eigen::Vector4d &body_quat)
 {
-    Eigen::Matrix3d R = quatToMat(body_quat);
-    return R.transpose() * vel_global;
+    return inv_rotate(vel_global, body_quat);
+}
+
+//-----------------------------------------------------
+// Rotate vel_local by body_quat
+//-----------------------------------------------------
+Eigen::Vector3d localToGlobalVelocity(const Eigen::Vector3d &vel_local,
+                                      const Eigen::Vector4d &body_quat)
+{
+    return rotate(vel_local, body_quat);
 }
 
 //-----------------------------------------------------
@@ -252,6 +269,7 @@ public:
             std::cerr << "[Warning] body 'base' not found in model." << std::endl;
             torso_idx_ = 0; // fallback
         }
+        std::cout << "Torso index: " << torso_idx_ << std::endl;
 
         // Identify feet site indices
         std::vector<std::string> feet_site_names = {"FL_foot", "FR_foot", "RL_foot", "RR_foot"};
@@ -262,6 +280,7 @@ public:
             {
                 std::cerr << "[Warning] Site not found: " << site_name << std::endl;
             }
+            std::cout << "Site id for " << site_name << ": " << sid << std::endl;
             feet_site_id_.push_back(sid);
         }
 
@@ -284,33 +303,60 @@ public:
                 default_pose_[i - 7] = m_->key_qpos[home_id * m_->nq + i];
             }
         }
+        std::cout << "Initial config: " << init_q_.transpose() << std::endl;
+        std::cout << "Default pose: " << default_pose_.transpose() << std::endl;
 
-        // Example joint_range_ from Python snippet (12x2).
+        // joint_range_ = Eigen::MatrixXd(12, 2);
+        // joint_range_ << -0.5, 0.5,
+        //     0.4, 1.4,
+        //     -2.3, -0.85,
+        //     -0.5, 0.5,
+        //     0.4, 1.4,
+        //     -2.3, -0.85,
+        //     -0.5, 0.5,
+        //     0.4, 1.4,
+        //     -2.3, -1.3,
+        //     -0.5, 0.5,
+        //     0.4, 1.4,
+        //     -2.3, -1.3;
+
+        // get joint limits from mujoco instead:
         joint_range_ = Eigen::MatrixXd(12, 2);
-        joint_range_ << -0.5, 0.5,
-            0.4, 1.4,
-            -2.3, -0.85,
-            -0.5, 0.5,
-            0.4, 1.4,
-            -2.3, -0.85,
-            -0.5, 0.5,
-            0.4, 1.4,
-            -2.3, -1.3,
-            -0.5, 0.5,
-            0.4, 1.4,
-            -2.3, -1.3;
+        for (int i = 0; i < 12; i++)
+        {
+            joint_range_(i, 0) = m_->jnt_range[i * 2];
+            joint_range_(i, 1) = m_->jnt_range[i * 2 + 1];
+        }
 
-        // We do NOT know the actual physical_joint_range_ from your code;
-        // as an example, set them same as joint_range_:
+        std::cout << "Joint range: " << joint_range_ << std::endl;
+
         physical_joint_range_ = joint_range_;
 
-        // We also define a placeholder for joint_torque_range_ (12x2),
-        // e.g. min torque = -50, max torque = 50 for each joint:
+        // joint_torque_range_ = Eigen::MatrixXd(12, 2);
+        // joint_torque_range_.col(0).setConstant(-500.0);
+        // joint_torque_range_.col(1).setConstant(500.0);
+
+        // get torque limits from mujoco instead:
         joint_torque_range_ = Eigen::MatrixXd(12, 2);
-        joint_torque_range_.col(0).setConstant(-50.0);
-        joint_torque_range_.col(1).setConstant(50.0);
+        for (int i = 0; i < 12; i++)
+        {
+            // if lb and ub = 0, then set to inf
+            if (std::fabs(m_->actuator_ctrlrange[i * 2]) < 1e-6 && std::fabs(m_->actuator_ctrlrange[i * 2 + 1]) < 1e-6)
+            {
+                joint_torque_range_(i, 0) = -std::numeric_limits<double>::infinity();
+                joint_torque_range_(i, 1) = std::numeric_limits<double>::infinity();
+            }
+            else
+            {
+                joint_torque_range_(i, 0) = m_->actuator_ctrlrange[i * 2];
+                joint_torque_range_(i, 1) = m_->actuator_ctrlrange[i * 2 + 1];
+            }
+        }
+
+        std::cout << "Torque range: " << joint_torque_range_ << std::endl;
 
         action_size_ = m_->nu; // 12
+        std::cout << "Action size: " << action_size_ << std::endl;
 
         foot_radius_ = 0.0175;
 
@@ -357,14 +403,9 @@ public:
         s.info.ang_vel_tar = Eigen::Vector3d(0.0, 0.0, 0.0);
         s.info.yaw_tar = 0.0;
         s.info.step = 0;
-        s.info.z_feet = Eigen::VectorXd::Zero(4);
-        s.info.z_feet_tar = Eigen::VectorXd::Zero(4);
         s.info.randomize_target = config_.randomize_tasks;
-        s.info.last_contact = Eigen::VectorXi::Zero(4);
-        s.info.feet_air_time = Eigen::VectorXd::Zero(4);
 
         Eigen::VectorXd ctrl_init = Eigen::VectorXd::Zero(m_->nu);
-        s.obs = get_obs(s.info, ctrl_init);
         s.reward = 0.0;
         s.done = false;
 
@@ -391,8 +432,8 @@ public:
         // 2) pipeline_step
         pipeline_step(m_, d_, ctrl);
 
-        // 3) gather new obs
-        Eigen::VectorXd obs = get_obs(state.info, ctrl);
+        // 3) compute observation
+        // omitted
 
         // Possibly randomize velocity commands every 500 steps
         if (state.info.randomize_target && (state.info.step % 500 == 0))
@@ -416,53 +457,143 @@ public:
         }
 
         // 4) compute reward
-        double reward = computeReward(state.info, ctrl);
 
-        // 5) check done
-        bool done = checkTermination();
-
-        state.info.rng = rng;
-
-        // 6) update state info (z_feet, contact, etc.)
-        state.info.step += 1;
-        // site z positions:
         Eigen::Vector4d z_feet;
         for (int i = 0; i < 4; i++)
         {
             z_feet[i] = d_->site_xpos[feet_site_id_[i] * 3 + 2];
         }
-        state.info.z_feet = z_feet;
-        // needed for debugging or logging
+        // get foot step reference
+        Eigen::VectorXd z_feet_tar = computeFootStep(state.info);
 
-        // feet contact + last_contact
-        Eigen::Vector4i contact;
+        // reward_gaits = - sum(((z_feet_tar - z_feet)/0.05)^2)
+        double reward_gaits = 0.0;
         for (int i = 0; i < 4; i++)
         {
-            double foot_z = d_->site_xpos[feet_site_id_[i] * 3 + 2] - foot_radius_;
-            contact[i] = (foot_z < 1e-3) ? 1 : 0;
+            double diff = (z_feet_tar[i] - z_feet[i]) / 0.05;
+            reward_gaits -= diff * diff;
         }
-        Eigen::Vector4i contact_filt_mm;
-        for (int i = 0; i < 4; i++)
-        {
-            contact_filt_mm[i] = (contact[i] || state.info.last_contact[i]) ? 1 : 0;
-        }
-        // feet_air_time
-        for (int i = 0; i < 4; i++)
-        {
-            if (contact_filt_mm[i] == 0)
-            {
-                state.info.feet_air_time[i] += dt();
-            }
-            else
-            {
-                state.info.feet_air_time[i] = 0.0;
-            }
-        }
-        state.info.last_contact = contact;
 
-        // also store the updated obs, reward, done
+        // reward_upright: measure alignment with global up
+        Eigen::Vector3d up_global(0, 0, 1);
+        Eigen::Vector4d torso_quat;
+        for (int i = 0; i < 4; i++)
+        {
+            torso_quat[i] = d_->xquat[torso_idx_ * 4 + i];
+        }
+        // Eigen::Matrix3d R = quatToMat(&d_->xquat[torso_idx_ * 4]); // torso orientation
+        // Eigen::Vector3d up_body = R * up_global;
+        Eigen::Vector3d up_body = rotate(up_global, torso_quat);
+        double reward_upright = -(up_body - up_global).squaredNorm();
+
+        // yaw orientation reward
+        double yaw_tar = state.info.yaw_tar + state.info.ang_vel_tar[2] * dt() * state.info.step;
+        double yaw = quatToYaw(torso_quat);
+        double d_yaw = yaw - yaw_tar;
+        double wrapped = atan2(std::sin(d_yaw), std::cos(d_yaw));
+        double reward_yaw = -(wrapped * wrapped);
+
+        // velocity reward
+
+        // we need to replicate this:
+        // x = Transform(pos=data.xpos[1:], rot=data.xquat[1:])
+        // cvel = Motion(vel=data.cvel[1:, 3:], ang=data.cvel[1:, :3])
+        // offset = data.xpos[1:, :] - data.subtree_com[sys.body_rootid[1:]]
+        // offset = Transform.create(pos=offset)
+        // xd = offset.vmap().do(cvel)
+
+        // vb = global_to_body_velocity(
+        //     xd.vel[self._torso_idx - 1], x.rot[self._torso_idx - 1]
+        // )
+        // ab = global_to_body_velocity(
+        //     xd.ang[self._torso_idx - 1] * jnp.pi / 180.0, x.rot[self._torso_idx - 1]
+        // )
+        // reward_vel = -jnp.sum((vb[:2] - state.info["vel_tar"][:2]) ** 2)
+        // reward_ang_vel = -jnp.sum((ab[2] - state.info["ang_vel_tar"][2]) ** 2)
+
+        // this is wrong! does not use the transformed velocities:
+        // Eigen::Vector3d v_global(d_->cvel[torso_idx_ * 6 + 3],
+        //                          d_->cvel[torso_idx_ * 6 + 4],
+        //                          d_->cvel[torso_idx_ * 6 + 5]);
+        // Eigen::Vector3d w_global(d_->cvel[torso_idx_ * 6 + 0],
+        //                          d_->cvel[torso_idx_ * 6 + 1],
+        //                          d_->cvel[torso_idx_ * 6 + 2]);
+        // Eigen::Vector3d vb = globalToBodyVelocity(v_global, torso_quat);
+        // Eigen::Vector3d ab = globalToBodyVelocity(w_global, torso_quat);
+        // double reward_vel = -(vb.head<2>() - state.info.vel_tar.head<2>()).squaredNorm();
+        // double reward_ang_vel = -std::pow(ab[2] - state.info.ang_vel_tar[2], 2.0);
+
+        // this is right:
+        Eigen::Vector3d offset;
+        offset << d_->xpos[torso_idx_ * 3 + 0] - d_->subtree_com[m_->body_rootid[torso_idx_] * 3 + 0],
+            d_->xpos[torso_idx_ * 3 + 1] - d_->subtree_com[m_->body_rootid[torso_idx_] * 3 + 1],
+            d_->xpos[torso_idx_ * 3 + 2] - d_->subtree_com[m_->body_rootid[torso_idx_] * 3 + 2];
+
+        Eigen::Vector4d identity_quat(1.0, 0.0, 0.0, 0.0);
+
+        Eigen::Vector3d cvel_ang;
+        cvel_ang << d_->cvel[torso_idx_ * 6 + 0],
+            d_->cvel[torso_idx_ * 6 + 1],
+            d_->cvel[torso_idx_ * 6 + 2];
+
+        Eigen::Vector3d cvel_lin;
+        cvel_lin << d_->cvel[torso_idx_ * 6 + 3],
+            d_->cvel[torso_idx_ * 6 + 4],
+            d_->cvel[torso_idx_ * 6 + 5];
+
+        Eigen::Vector4d rot_inv = quat_inv(identity_quat);
+        Eigen::Vector3d vel_ang = rotate(cvel_ang, rot_inv);
+        Eigen::Vector3d vel_lin = rotate(cvel_lin - offset.cross(cvel_ang), rot_inv);
+
+        Eigen::Vector3d vb = globalToBodyVelocity(vel_lin, torso_quat);
+        Eigen::Vector3d ab = globalToBodyVelocity(vel_ang, torso_quat);
+
+        double reward_vel = -(vb.head<2>() - state.info.vel_tar.head<2>()).squaredNorm();
+        double reward_ang_vel = -std::pow(ab[2] - state.info.ang_vel_tar[2], 2.0);
+
+        // height reward
+        double reward_height = -std::pow((d_->xpos[torso_idx_ * 3 + 2] - state.info.pos_tar[2]), 2);
+
+        // sum up with weights
+        double reward = 0.1 * reward_gaits + 0.5 * reward_upright + 0.3 * reward_yaw + 1.0 * reward_vel + 1.0 * reward_ang_vel + 1.0 * reward_height;
+        // double reward = 0.0 * reward_gaits + 5.0 * reward_upright + 1.0 * reward_height;
+
+        // 5) check done
+        bool done = false;
+
+        // dot(up_body, up_global) < 0 => inverted
+        if (up_body.dot(up_global) < 0.0)
+        {
+            done = true;
+        }
+
+        // check joint angles out of range
+        const int N = joint_range_.rows();
+        for (int i = 0; i < N; i++)
+        {
+            double angle = d_->qpos[7 + i];
+            double lower = joint_range_(i, 0);
+            double upper = joint_range_(i, 1);
+            if (angle < lower || angle > upper)
+            {
+                done = true;
+            }
+        }
+
+        // check if torso fell below 0.18
+        double z_torso = d_->xpos[torso_idx_ * 3 + 2];
+        if (z_torso < 0.18)
+        {
+            done = true;
+        }
+
+        state.info.rng = rng;
+
+        // 6) update state info (z_feet, contact, etc.)
+        state.info.step += 1;
+
+        // also store the updated reward, done
         EnvState newState = state;
-        newState.obs = obs;
         newState.reward = reward;
         newState.done = done;
         return newState;
@@ -601,173 +732,6 @@ private:
             tau[i] = clamp(val, tmin, tmax);
         }
         return tau;
-    }
-
-    // --------------------------------------------------
-    // Build observation vector, just as in python
-    // --------------------------------------------------
-    Eigen::VectorXd get_obs(const StateInfo &info,
-                            const Eigen::VectorXd &ctrl)
-    {
-        // Collect velocities from d_->cvel
-        // MuJoCo cvel per body: [angular(3), linear(3)]
-        // Here: torso_idx_ * 6 => offset
-        double w_x = d_->cvel[torso_idx_ * 6 + 0];
-        double w_y = d_->cvel[torso_idx_ * 6 + 1];
-        double w_z = d_->cvel[torso_idx_ * 6 + 2];
-        double v_x = d_->cvel[torso_idx_ * 6 + 3];
-        double v_y = d_->cvel[torso_idx_ * 6 + 4];
-        double v_z = d_->cvel[torso_idx_ * 6 + 5];
-
-        Eigen::Vector3d w_global(w_x, w_y, w_z);
-        Eigen::Vector3d v_global(v_x, v_y, v_z);
-
-        const double *body_quat = &d_->xquat[torso_idx_ * 4];
-        Eigen::Vector3d vb = globalToBodyVelocity(v_global, body_quat);
-        Eigen::Vector3d ab = globalToBodyVelocity(w_global, body_quat);
-
-        // qpos, qvel
-        Eigen::VectorXd qpos(m_->nq);
-        for (int i = 0; i < m_->nq; i++)
-        {
-            qpos[i] = d_->qpos[i];
-        }
-        Eigen::VectorXd qvel(m_->nv);
-        for (int i = 0; i < m_->nv; i++)
-        {
-            qvel[i] = d_->qvel[i];
-        }
-
-        // match python ordering:
-        // [vel_tar(3), ang_vel_tar(3), ctrl(m_->nu), qpos(m_->nq),
-        //  vb(3), ab(3), qvel[6..end]]
-        int nu = m_->nu;
-        int tail_v = m_->nv - 6; // length of qvel we keep
-        int obs_dim = 3 + 3 + nu + m_->nq + 3 + 3 + tail_v;
-
-        Eigen::VectorXd obs(obs_dim);
-        int idx = 0;
-        // vel_tar
-        obs.segment<3>(idx) = info.vel_tar;
-        idx += 3;
-        // ang_vel_tar
-        obs.segment<3>(idx) = info.ang_vel_tar;
-        idx += 3;
-        // ctrl
-        obs.segment(idx, nu) = ctrl;
-        idx += nu;
-        // qpos
-        obs.segment(idx, m_->nq) = qpos;
-        idx += m_->nq;
-        // vb
-        obs.segment<3>(idx) = vb;
-        idx += 3;
-        // ab
-        obs.segment<3>(idx) = ab;
-        idx += 3;
-        // qvel[6..]
-        obs.segment(idx, tail_v) = qvel.segment(6, tail_v);
-
-        return obs;
-    }
-
-    // --------------------------------------------------
-    // Reward calculation, matching the python snippet
-    // --------------------------------------------------
-    double computeReward(StateInfo &info, const Eigen::VectorXd &ctrl)
-    {
-        // 1) get actual foot z
-        Eigen::Vector4d z_feet;
-        for (int i = 0; i < 4; i++)
-        {
-            z_feet[i] = d_->site_xpos[feet_site_id_[i] * 3 + 2];
-        }
-        // get foot step reference
-        Eigen::VectorXd z_feet_tar = computeFootStep(info);
-
-        // reward_gaits = - sum(((z_feet_tar - z_feet)/0.05)^2)
-        double reward_gaits = 0.0;
-        for (int i = 0; i < 4; i++)
-        {
-            double diff = (z_feet_tar[i] - z_feet[i]) / 0.05;
-            reward_gaits -= diff * diff;
-        }
-
-        // torso pos, orientation
-        Eigen::Vector3d torso_pos(d_->xpos[torso_idx_ * 3 + 0],
-                                  d_->xpos[torso_idx_ * 3 + 1],
-                                  d_->xpos[torso_idx_ * 3 + 2]);
-        Eigen::Matrix3d R = quatToMat(&d_->xquat[torso_idx_ * 4]);
-
-        // reward_upright: measure alignment with global up
-        Eigen::Vector3d up_global(0, 0, 1);
-        Eigen::Vector3d up_body = R * up_global;
-        double reward_upright = -(up_body - up_global).squaredNorm();
-
-        // yaw orientation reward
-        double yaw_tar = info.yaw_tar + info.ang_vel_tar[2] * dt() * info.step;
-        double yaw = quatToYaw(&d_->xquat[torso_idx_ * 4]);
-        double d_yaw = yaw - yaw_tar;
-        double wrapped = atan2(std::sin(d_yaw), std::cos(d_yaw));
-        double reward_yaw = -(wrapped * wrapped);
-
-        // velocity
-        Eigen::Vector3d v_global(d_->cvel[torso_idx_ * 6 + 3],
-                                 d_->cvel[torso_idx_ * 6 + 4],
-                                 d_->cvel[torso_idx_ * 6 + 5]);
-        Eigen::Vector3d w_global(d_->cvel[torso_idx_ * 6 + 0],
-                                 d_->cvel[torso_idx_ * 6 + 1],
-                                 d_->cvel[torso_idx_ * 6 + 2]);
-        Eigen::Vector3d vb = globalToBodyVelocity(v_global, &d_->xquat[torso_idx_ * 4]);
-        Eigen::Vector3d ab = globalToBodyVelocity(w_global, &d_->xquat[torso_idx_ * 4]);
-        double reward_vel = -(vb.head<2>() - info.vel_tar.head<2>()).squaredNorm();
-        double reward_ang_vel = -std::pow(ab[2] - info.ang_vel_tar[2], 2.0);
-
-        // height reward
-        // pos_tar z is info.pos_tar[2], but also the snippet does something like
-        // pos_tar = info.pos_tar + ...
-        // We'll just replicate the final line from the snippet:
-        double reward_height = -std::pow((torso_pos[2] - info.pos_tar[2]), 2);
-
-        // sum up with python weights
-        double reward = 0.1 * reward_gaits + 0.5 * reward_upright + 0.3 * reward_yaw + 1.0 * reward_vel + 1.0 * reward_ang_vel + 1.0 * reward_height;
-
-        return reward;
-    }
-
-    // --------------------------------------------------
-    // termination check
-    // --------------------------------------------------
-    bool checkTermination()
-    {
-        // dot(up_body, up_global) < 0 => inverted
-        Eigen::Matrix3d R = quatToMat(&d_->xquat[torso_idx_ * 4]);
-        Eigen::Vector3d up_body = R * Eigen::Vector3d(0, 0, 1);
-        if (up_body.dot(Eigen::Vector3d(0, 0, 1)) < 0.0)
-        {
-            return true;
-        }
-
-        // check joint angles out of range
-        const int N = joint_range_.rows();
-        for (int i = 0; i < N; i++)
-        {
-            double angle = d_->qpos[7 + i];
-            double lower = joint_range_(i, 0);
-            double upper = joint_range_(i, 1);
-            if (angle < lower || angle > upper)
-            {
-                return true;
-            }
-        }
-
-        // check if torso fell below 0.18
-        double z_torso = d_->xpos[torso_idx_ * 3 + 2];
-        if (z_torso < 0.18)
-        {
-            return true;
-        }
-        return false;
     }
 
     // --------------------------------------------------

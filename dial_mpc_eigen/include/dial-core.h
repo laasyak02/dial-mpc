@@ -344,7 +344,8 @@ inline Eigen::MatrixXd node2u(const Eigen::MatrixXd &nodes,
                               const Eigen::VectorXd &step_us)
 {
   // nodes has shape (Hnode+1, nu)
-  return piecewiseLinearInterpolate(nodes, step_nodes, step_us);
+  // return piecewiseLinearInterpolate(nodes, step_nodes, step_us);
+  return piecewiseCubicHermiteInterpolate(nodes, step_nodes, step_us);
 }
 
 inline Eigen::MatrixXd u2node(const Eigen::MatrixXd &us,
@@ -352,7 +353,8 @@ inline Eigen::MatrixXd u2node(const Eigen::MatrixXd &us,
                               const Eigen::VectorXd &step_nodes)
 {
   // us has shape (Hsample+1, nu)
-  return piecewiseLinearInterpolate(us, step_us, step_nodes);
+  // return piecewiseLinearInterpolate(us, step_us, step_nodes);
+  return piecewiseCubicHermiteInterpolate(us, step_us, step_nodes);
 }
 
 //////////////////////////////////////////////////////////////
