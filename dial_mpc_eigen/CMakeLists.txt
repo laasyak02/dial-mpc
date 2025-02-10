@@ -7,7 +7,7 @@ set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 add_definitions(-D_GLIBCXX_PARALLEL)
 
-# set(CMAKE_CXX_FLAGS "-O3 -no-pie -march=native -ffast-math -DNDEBUG -fopenmp")
+set(CMAKE_CXX_FLAGS "-O3 -no-pie -march=native -ffast-math -DNDEBUG -fopenmp")
 
 find_package(Eigen3 REQUIRED)
 find_package(mujoco REQUIRED)
