@@ -22,7 +22,7 @@ dial::DialConfig cfg;
 go2env::UnitreeGo2EnvConfig go2_config;
 
 std::vector<Eigen::VectorXd> all_us;
-std::vector<MultiBodyState> all_xs;
+std::vector<go2env::EnvState> all_states;
 
 Eigen::Matrix<double, 12, 2> joint_range;
 Eigen::Matrix<double, 12, 2> joint_torque_range;
@@ -31,7 +31,7 @@ bool controller_started = false;
 double mj_start_time = 0.0;
 double curr_time = 0.0;
 
-static const int NUMBER_OF_SAMPLES = 9;
+static const int NUMBER_OF_SAMPLES = 50;
 
 //////////////////////////////////////////////////////////////
 // Main
@@ -45,15 +45,15 @@ int main()
     cfg.Ndiffuse = 2;
     cfg.Ndiffuse_init = 10;
     cfg.temp_sample = 0.05;
-    cfg.n_steps = 400;
-    cfg.ctrl_dt = 0.02;
+    cfg.n_steps = 200;
+    cfg.ctrl_dt = 0.0025;
     cfg.horizon_diffuse_factor = 0.9;
     cfg.traj_diffuse_factor = 0.5;
 
     go2_config.kp = 30.0;
     go2_config.kd = 1.0;
     go2_config.action_scale = 1.0;
-    go2_config.default_vx = 0.8;
+    go2_config.default_vx = 0.0;
     go2_config.default_vy = 0.0;
     go2_config.default_vyaw = 0.0;
     go2_config.ramp_up_time = 1.0;
@@ -70,7 +70,8 @@ int main()
 
     mjEnv.Initialize(model_path);
     controller_started = true;
-    mj_start_time = mjEnv.GetTime();
+    mjEnv.GetModel()->opt.timestep = go2_config.timestep;
+    mj_start_time = mjEnv.GetData()->time;
 
     mjEnv.Loop();
 
@@ -90,33 +91,20 @@ void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2
     // Reset environment
     go2env::EnvState state_init = env.reset(rng);
 
-    // YN = zeros( (Hnode+1, nu) )
-    Eigen::MatrixXd YN = Eigen::MatrixXd::Zero(config.Hnode + 1, mbdpi.nu_);
+    Eigen::MatrixXd YN = Eigen::MatrixXd::Zero(config.Hnode + 1, mbdpi.nu_); // (Hnode+1, nu)
+    // YN = mbdpi.reverse(state_init, YN, rng);
 
-    //    (Optional) initial reverse call, as in Python code sometimes:
-    //    "Y0 = mbdpi.reverse(state_init, YN, rng_exp)"
-    //    You can comment/uncomment as needed.
-    YN = mbdpi.reverse(state_init, YN, rng);
-
-    // Let Y0 = the result
     Eigen::MatrixXd Y0 = YN;
 
     //  Main rollout loop
     std::vector<double> rews;
     rews.reserve(config.n_steps);
 
-    // std::vector<Eigen::VectorXd> all_us;
     all_us.reserve(config.n_steps);
-
-    std::vector<MultiBodyState> all_xs;
-    all_xs.reserve(config.n_steps);
+    all_states.reserve(config.n_steps);
 
     go2env::EnvState cur_state = state_init;
-
-    MultiBodyState mbs;
-    mbs.qpos = Eigen::VectorXd::Map(cur_state.pipeline_state.qpos.data(), cur_state.pipeline_state.qpos.rows());
-    mbs.qvel = Eigen::VectorXd::Map(cur_state.pipeline_state.qvel.data(), cur_state.pipeline_state.qvel.rows());
-    all_xs.push_back(mbs);
+    all_states.push_back(cur_state);
 
     for (int t = 0; t < config.n_steps; t++)
     {
@@ -124,10 +112,8 @@ void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2
         Eigen::VectorXd action = Y0.row(0);
         go2env::EnvState next_state = env.step(cur_state, action);
         rews.push_back(next_state.reward);
-        mbs.qpos = Eigen::VectorXd::Map(next_state.pipeline_state.qpos.data(), next_state.pipeline_state.qpos.rows());
-        mbs.qvel = Eigen::VectorXd::Map(next_state.pipeline_state.qvel.data(), next_state.pipeline_state.qvel.rows());
-        all_xs.push_back(mbs);
         all_us.push_back(action);
+        all_states.push_back(next_state);
 
         // shift Y0
         Y0 = mbdpi.shift(Y0);
@@ -155,7 +141,7 @@ void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2
             Y0 = newY;
             // info.rews is the distribution of sample mean rewards, you can log if desired.
         }
-
+        std::cout << "Step " << t << " done" << std::endl;
         cur_state = next_state;
     }
 

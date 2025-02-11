@@ -170,16 +170,16 @@ namespace go2env
         {
         }
 
-        double kp;
-        double kd;
-        double action_scale;
+        double kp = 30.0;
+        double kd = 1.0;
+        double action_scale = 1.0;
 
-        double default_vx;
-        double default_vy;
-        double default_vyaw;
-        double ramp_up_time;
-        std::string gait;
-        double timestep; // dt of the underlying simulator step
+        double default_vx = 0.0;
+        double default_vy = 0.0;
+        double default_vyaw = 0.0;
+        double ramp_up_time = 1.0;
+        std::string gait = "stand";
+        double timestep = 0.0025; // dt of the underlying simulator step
     };
 
     //-----------------------------------------------------
@@ -404,7 +404,7 @@ namespace go2env
             std::cout << "Default pose: " << default_pose_.transpose() << std::endl;
 
             // get joint limits from mujoco instead:
-            joint_range_ = Matrix12Bounds();
+            joint_range_ = Matrix12Bounds::Zero();
             for (size_t i = 0; i < 12; i++)
             {
                 joint_range_(i, 0) = m_->jnt_range[i * 2];
@@ -416,7 +416,7 @@ namespace go2env
             physical_joint_range_ = joint_range_;
 
             // get torque limits from mujoco instead:
-            joint_torque_range_ = Matrix12Bounds();
+            joint_torque_range_ = Matrix12Bounds::Zero();
             for (size_t i = 0; i < 12; i++)
             {
                 // if lb and ub = 0, then set to inf
@@ -445,7 +445,7 @@ namespace go2env
             if (!kGaitPhases_.count(config_.gait))
             {
                 std::cerr << "Gait not recognized: " << config_.gait << std::endl;
-                gait_ = "trot";
+                gait_ = "stand";
             }
             else
             {
@@ -455,23 +455,28 @@ namespace go2env
 
         ~UnitreeGo2Env()
         {
-            // if (d_)
-            //     mj_deleteData(d_);
-            // if (m_)
-            //     mj_deleteModel(m_);
+            mj_deleteData(d_main_);
+            for (int i = 0; i < BATCH_SIZE; i++)
+            {
+                mj_deleteData(d_[i]);
+            }
+            mj_deleteModel(m_);
         }
 
         // steps a particular mjdata for a sequence of actions given the initial state, returns the sequence of environment states
         template <typename Derived>
         std::vector<EnvState> stepTrajectory(size_t data_index, const EnvState &state_init, const Eigen::MatrixBase<Derived> &actions)
         {
-            assert(actions.rows() == 12 && "Actions must be 12xN");
+            assert(actions.cols() == 12 && "Actions must be Nx12");
             std::vector<EnvState> states;
-            states.reserve(actions.cols());
+            states.reserve(actions.rows());
             EnvState state = state_init;
-            for (size_t i = 0; i < actions.cols(); i++)
+            copy_eigen_to_mujoco(d_[data_index]->qpos, state_init.pipeline_state.qpos, 19);
+            copy_eigen_to_mujoco(d_[data_index]->qvel, state_init.pipeline_state.qvel, 18);
+            for (size_t i = 0; i < actions.rows(); i++)
             {
-                state = step(data_index, state, actions.col(i));
+                Vector12d transposed_action = actions.row(i).transpose();
+                state = step(data_index, state, transposed_action);
                 states.push_back(state);
             }
             return states;
@@ -494,8 +499,13 @@ namespace go2env
         {
             assert(action.rows() == 12 && "Action must be 12x1");
 
-            Vector19d qpos_init = state_init.pipeline_state.qpos;
-            Vector18d qvel_init = state_init.pipeline_state.qvel;
+            // Vector19d qpos_init = state_init.pipeline_state.qpos;
+            // Vector18d qvel_init = state_init.pipeline_state.qvel;
+
+            Vector19d qpos_init = Vector19d::Zero();
+            Vector18d qvel_init = Vector18d::Zero();
+            copy_mujoco_to_eigen(d->qpos, qpos_init, 19);
+            copy_mujoco_to_eigen(d->qvel, qvel_init, 18);
 
             Vector12d ctrl = act2tau(qpos_init.tail<12>(), qvel_init.tail<12>(), action);
 
@@ -581,12 +591,12 @@ namespace go2env
             for (int i = 0; i < BATCH_SIZE; i++)
             {
                 mj_resetData(m_, d_[i]);
-                pipelineInit(i, init_q_, zero_dq);
+                PipelineState tmp = pipelineInit(i, init_q_, zero_dq);
             }
 
             StateInfo info;
             info.rng = rng;
-            info.pos_tar = Vector3d(0.282, 0.0, 0.3);
+            info.pos_tar = Vector3d(0.0, 0.0, 0.27);
             info.vel_tar = Vector3d(0.0, 0.0, 0.0);
             info.ang_vel_tar = Vector3d(0.0, 0.0, 0.0);
             info.yaw_tar = 0.0;
@@ -641,8 +651,8 @@ namespace go2env
 
         PipelineState pipelineStep(mjData *d, const Vector19d &qpos, const Vector18d &qvel, const Vector12d &ctrl)
         {
-            copy_eigen_to_mujoco(d->qpos, qpos, 19);
-            copy_eigen_to_mujoco(d->qvel, qvel, 18);
+            // copy_eigen_to_mujoco(d->qpos, qpos, 19);
+            // copy_eigen_to_mujoco(d->qvel, qvel, 18);
 
             copy_eigen_to_mujoco(d->ctrl, ctrl, 12);
 
@@ -650,20 +660,20 @@ namespace go2env
             return createTransformedState(d);
         }
 
-        PipelineState createTransformedState(size_t data_index) const
+        PipelineState createTransformedState(size_t data_index)
         {
             return createTransformedState(d_[data_index]);
         }
 
-        PipelineState createTransformedState(mjData *d) const
+        PipelineState createTransformedState(mjData *d)
         {
-            Vector19d qpos_out;
-            Vector18d qvel_out;
+            Vector19d qpos_out = Vector19d::Zero();
+            Vector18d qvel_out = Vector18d::Zero();
             copy_mujoco_to_eigen(d->qpos, qpos_out, 19);
             copy_mujoco_to_eigen(d->qvel, qvel_out, 18);
 
-            Vector3d xpos;
-            Vector4d xquat;
+            Vector3d xpos = Vector3d::Zero();
+            Vector4d xquat = Vector4d::Zero();
             copy_mujoco_to_eigen(&d->xpos[torso_idx_ * 3], xpos, 3);
             copy_mujoco_to_eigen(&d->xquat[torso_idx_ * 4], xquat, 4);
             Transform x(xpos, xquat);
@@ -700,7 +710,7 @@ namespace go2env
         {
             assert(act.rows() == 12 && "Action must be 12x1");
             size_t N = joint_range_.rows(); // e.g. 12
-            Vector12d result(N);
+            Vector12d result = Vector12d::Zero();
             Vector12d act_normalized = (act * config_.action_scale + Vector12d::Constant(1.0)) / 2.0;
             for (size_t i = 0; i < N; i++)
             {
@@ -730,7 +740,7 @@ namespace go2env
 
             // PD
             Vector12d qj_err = joint_target - qj;
-            Vector12d tau(N);
+            Vector12d tau = Vector12d::Zero();
             for (size_t i = 0; i < N; i++)
             {
                 double val = config_.kp * qj_err[i] - config_.kd * qdj[i];

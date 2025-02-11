@@ -183,9 +183,14 @@ public:
 #endif
     }
 
-    double GetTime() const
+    mjModel *GetModel() const
     {
-        return d->time;
+        return m;
+    }
+
+    mjData *GetData() const
+    {
+        return d;
     }
 
 protected:

@@ -48,11 +48,10 @@ namespace dial
     int Ndiffuse = 2;                    // how many times we run "reverse_once" each planning step
     int Ndiffuse_init = 10;              // used at the first iteration
     double temp_sample = 0.05;           // temperature
-    double horizon_diffuse_factor = 0.5; // multiplies sigma_control
-    double ctrl_dt = 0.02;               // control dt
-    int n_steps = 400;                   // number of rollout steps
+    int n_steps = 200;                   // number of rollout steps
+    double ctrl_dt = 0.0025;               // control dt
+    double horizon_diffuse_factor = 0.9; // multiplies sigma_control
     double traj_diffuse_factor = 0.5;    // factor^i in each "reverse_once" iteration
-    std::string update_method = "mppi";  // only "mppi" used in the original script
   };
 
   // reverse_once: replicate the Python method exactly
@@ -410,7 +409,7 @@ namespace dial
       for (int i = 0; i < all_us.size(); ++i)
       {
         rews_batch.push_back(VectorXd::Zero(args_.Hsample + 1));
-        std::vector<go2env::EnvState> traj_sample_i = env_.stepTrajectory(i, state, all_us[i].transpose());
+        std::vector<go2env::EnvState> traj_sample_i = env_.stepTrajectory(i, state, all_us[i]);
         for (size_t t = 0; t < traj_sample_i.size(); ++t) // data locality sucks but whatever
         {
           rews_batch[i](t) = traj_sample_i[t].reward;
@@ -434,23 +433,27 @@ namespace dial
       // 1) Sample from q_i
       // Generate NUMSAMPLES candidates (each is a matrix of shape (Hnode+1, nu))
       std::normal_distribution<double> dist(0.0, 1.0);
-      std::vector<MatrixXd> Y0s(NUMSAMPLES);
+      std::vector<MatrixXd> Y0s;
+      Y0s.reserve(NUMSAMPLES);
 
       for (int s = 0; s < NUMSAMPLES; s++)
       {
+        std::mt19937_64 *rng_tmp = new std::mt19937_64(std::chrono::system_clock::now().time_since_epoch().count() + s);
         MatrixXd eps = MatrixXd::Zero(args_.Hnode + 1, nu_);
         for (int i = 0; i <= args_.Hnode; i++)
         {
           for (int j = 0; j < nu_; j++)
           {
-            double z = dist(rng);
+            double z = dist(*rng_tmp);
             eps(i, j) = z * noise_scale(i);
           }
         }
         MatrixXd candidate = Ybar_i + eps;
         // Fix the first node (control) to remain unchanged.
         candidate.row(0) = Ybar_i.row(0);
-        Y0s[s] = candidate;
+        Y0s.push_back(candidate);
+
+        delete rng_tmp;
       }
 
       // Append Ybar_i as the last candidate so that total candidates = NUMSAMPLES+1.
@@ -480,7 +483,6 @@ namespace dial
       // 3) Convert each candidate from node-space to a full control trajectory.
       // Each candidate: (Hnode+1, nu) -> (Hsample+1, nu)
       std::vector<MatrixXd> batch_us;
-
       batch_us.reserve(all_Y0s.size());
       for (size_t i = 0; i < all_Y0s.size(); i++)
       {
