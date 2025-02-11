@@ -22,10 +22,72 @@ namespace go2env
     using Vector19d = Eigen::Matrix<double, 19, 1>; // for qpos
     using Vector18d = Eigen::Matrix<double, 18, 1>; // for qvel
 
-    using Vector12d = Eigen::Matrix<double, 12, 1>;      // for joints, torques
+    using Vector12d = Eigen::Matrix<double, 12, 1>; // for joints, torques
+    using Matrix12Xd = Eigen::Matrix<double, 12, Eigen::Dynamic>;
     using Matrix12Bounds = Eigen::Matrix<double, 12, 2>; // for joint limits
     using Vector3d = Eigen::Vector3d;
     using Vector4d = Eigen::Vector4d;
+
+    //-----------------------------------------------------
+    // Convert quaternion to yaw angle (Z euler)
+    //-----------------------------------------------------
+    static double quat_to_yaw(Vector4d quat)
+    {
+        Eigen::Quaterniond q(quat[0], quat[1], quat[2], quat[3]);
+        // eulerAngles(2,1,0) returns (Z, Y, X)
+        Vector3d euler = q.toRotationMatrix().eulerAngles(2, 1, 0);
+        double yaw = euler[0];
+        return yaw;
+    }
+
+    //-----------------------------------------------------
+    // Compute the quaternion inverse
+    //-----------------------------------------------------
+    static Vector4d quat_inv(const Vector4d &q)
+    {
+        Vector4d q_inv = q;
+        q_inv.segment(1, 3) *= -1;
+        return q_inv;
+    }
+
+    //-----------------------------------------------------
+    // Rotate a vector by a quaternion
+    //-----------------------------------------------------
+    static Vector3d rotate(const Vector3d &v, const Vector4d &q)
+    {
+        double s = q[0];
+        Vector3d u = q.segment(1, 3);
+        Vector3d r = 2 * (u.dot(v) * u) + (s * s - u.dot(u)) * v;
+        r = r.eval() + 2 * s * u.cross(v);
+        return r;
+    }
+
+    //-----------------------------------------------------
+    // Rotate a vector by the inverse of a quaternion
+    //-----------------------------------------------------
+    static Vector3d inv_rotate(const Vector3d &v, const Vector4d &q)
+    {
+        Vector4d q_inv = quat_inv(q);
+        return rotate(v, q_inv);
+    }
+
+    //-----------------------------------------------------
+    // Rotate vel_global by inverse of body_quat
+    //-----------------------------------------------------
+    static Vector3d global_to_body_velocity(const Vector3d &vel_global,
+                                            const Vector4d &body_quat)
+    {
+        return inv_rotate(vel_global, body_quat);
+    }
+
+    //-----------------------------------------------------
+    // Rotate vel_local by body_quat
+    //-----------------------------------------------------
+    static Vector3d local_to_global_velocity(const Vector3d &vel_local,
+                                             const Vector4d &body_quat)
+    {
+        return rotate(vel_local, body_quat);
+    }
 
     class Transform;
 
@@ -72,7 +134,7 @@ namespace go2env
 
         Motion apply(const Motion &m)
         {
-            Vector3d quat_inv = quat_inv(quat_);
+            Vector4d quat_inv = quat_inv(quat_);
             Vector3d ang = rotate(m.ang_, quat_inv);
             Vector3d lin = rotate(m.lin_ - pos_.cross(m.ang_), quat_inv);
             return Motion(lin, ang);
@@ -101,6 +163,10 @@ namespace go2env
             : kp(kp), kd(kd), action_scale(action_scale),
               default_vx(default_vx), default_vy(default_vy), default_vyaw(default_vyaw),
               ramp_up_time(ramp_up_time), gait(gait), timestep(timestep)
+        {
+        }
+
+        UnitreeGo2EnvConfig()
         {
         }
 
@@ -241,73 +307,12 @@ namespace go2env
     }
 
     //-----------------------------------------------------
-    // Convert quaternion to yaw angle (Z euler)
-    //-----------------------------------------------------
-    static double quat_to_yaw(Vector4d quat)
-    {
-        Eigen::Quaterniond q(quat[0], quat[1], quat[2], quat[3]);
-        // eulerAngles(2,1,0) returns (Z, Y, X)
-        Vector3d euler = q.toRotationMatrix().eulerAngles(2, 1, 0);
-        double yaw = euler[0];
-        return yaw;
-    }
-
-    //-----------------------------------------------------
-    // Compute the quaternion inverse
-    //-----------------------------------------------------
-    static Vector4d quat_inv(const Vector4d &q)
-    {
-        Vector4d q_inv = q;
-        q_inv.segment(1, 3) *= -1;
-        return q_inv;
-    }
-
-    //-----------------------------------------------------
-    // Rotate a vector by a quaternion
-    //-----------------------------------------------------
-    static Vector3d rotate(const Vector3d &v, const Vector4d &q)
-    {
-        double s = q[0];
-        Vector3d u = q.segment(1, 3);
-        Vector3d r = 2 * (u.dot(v) * u) + (s * s - u.dot(u)) * v;
-        r = r.eval() + 2 * s * u.cross(v);
-        return r;
-    }
-
-    //-----------------------------------------------------
-    // Rotate a vector by the inverse of a quaternion
-    //-----------------------------------------------------
-    static Vector3d inv_rotate(const Vector3d &v, const Vector4d &q)
-    {
-        Vector4d q_inv = quat_inv(q);
-        return rotate(v, q_inv);
-    }
-
-    //-----------------------------------------------------
-    // Rotate vel_global by inverse of body_quat
-    //-----------------------------------------------------
-    static Vector3d global_to_body_velocity(const Vector3d &vel_global,
-                                            const Vector4d &body_quat)
-    {
-        return inv_rotate(vel_global, body_quat);
-    }
-
-    //-----------------------------------------------------
-    // Rotate vel_local by body_quat
-    //-----------------------------------------------------
-    static Vector3d local_to_global_velocity(const Vector3d &vel_local,
-                                             const Vector4d &body_quat)
-    {
-        return rotate(vel_local, body_quat);
-    }
-
-    //-----------------------------------------------------
     // Helper to copy Eigen vectors to Mujoco
     //-----------------------------------------------------
     template <typename Derived>
     static void copy_eigen_to_mujoco(double *dst, const Eigen::MatrixBase<Derived> &src, size_t size)
     {
-        static_assert(Derived::NumColsAtCompileTime == 1, "Only column (double) vectors are supported");
+        static_assert(Derived::ColsAtCompileTime == 1, "Only column (double) vectors are supported");
         // we don't check if the scalars are double, but oh well who cares
         for (size_t i = 0; i < size; ++i)
         {
@@ -318,7 +323,7 @@ namespace go2env
     template <typename Derived>
     static void copy_mujoco_to_eigen(const double *src, Eigen::MatrixBase<Derived> &dst, size_t size)
     {
-        static_assert(Derived::NumColsAtCompileTime == 1, "Only column (double) vectors are supported");
+        static_assert(Derived::ColsAtCompileTime == 1, "Only column (double) vectors are supported");
         for (size_t i = 0; i < size; ++i)
         {
             dst[i] = src[i];
@@ -328,11 +333,11 @@ namespace go2env
     //-----------------------------------------------------
     // The environment class
     //-----------------------------------------------------
-    template <typename std::size_t BATCH_SIZE_>
+    template <int BATCH_SIZE_>
     class UnitreeGo2Env
     {
     public:
-        using BATCH_SIZE = BATCH_SIZE_;
+        static const int BATCH_SIZE = BATCH_SIZE_;
 
         UnitreeGo2Env(const UnitreeGo2EnvConfig &config, const std::string &model_path)
             : config_(config)
@@ -344,7 +349,12 @@ namespace go2env
                 std::cerr << "Load model error: " << error << std::endl;
                 std::exit(1);
             }
-            d_ = mj_makeData(m_);
+
+            d_main_ = mj_makeData(m_);
+            for (int i = 0; i < BATCH_SIZE; i++)
+            {
+                d_[i] = mj_makeData(m_);
+            }
 
             // set global timestep
             m_->opt.timestep = config_.timestep;
@@ -441,11 +451,6 @@ namespace go2env
             {
                 gait_ = config_.gait;
             }
-
-            for (size_t i = 0; i < BATCH_SIZE; i++)
-            {
-                d_[i] = mj_makeData(m_);
-            }
         }
 
         ~UnitreeGo2Env()
@@ -457,29 +462,54 @@ namespace go2env
         }
 
         // steps a particular mjdata for a sequence of actions given the initial state, returns the sequence of environment states
-        std::vector<EnvState> stepTrajectory(size_t data_index, const EnvState &state_init, const std::vector<Vector12d> &actions)
+        template <typename Derived>
+        std::vector<EnvState> stepTrajectory(size_t data_index, const EnvState &state_init, const Eigen::MatrixBase<Derived> &actions)
         {
+            std::cout << "Step trajectory called for data index: " << data_index << std::endl;
+
+            std::cout << "Actions size: " << actions.rows() << "x" << actions.cols() << std::endl;
+
+            assert(actions.rows() == 12 && "Actions must be 12xN");
             std::vector<EnvState> states;
-            states.reserve(actions.size());
+            states.reserve(actions.cols());
             EnvState state = state_init;
-            for (size_t i = 0; i < actions.size(); i++)
+            for (size_t i = 0; i < actions.cols(); i++)
             {
-                state = step(data_index, state, actions[i]);
+                state = step(data_index, state, actions.col(i));
                 states.push_back(state);
             }
+
+            std::cout << "Step trajectory done" << std::endl;
             return states;
         }
 
-        EnvState step(size_t data_index, const EnvState &state_init, const Vector12d &action)
+        template <typename Derived>
+        EnvState step(const EnvState &state_init, const Eigen::MatrixBase<Derived> &action)
         {
-            Vector12d ctrl = act2tau(action);
+            return step(d_main_, state_init, action);
+        }
+
+        template <typename Derived>
+        EnvState step(size_t data_index, const EnvState &state_init, const Eigen::MatrixBase<Derived> &action)
+        {
+            return step(d_[data_index], state_init, action);
+        }
+
+        template <typename Derived>
+        EnvState step(mjData *d, const EnvState &state_init, const Eigen::MatrixBase<Derived> &action)
+        {
+            std::cout << "Step called" << std::endl;
+
+            assert(action.rows() == 12 && "Action must be 12x1");
 
             Vector19d qpos_init = state_init.pipeline_state.qpos;
             Vector18d qvel_init = state_init.pipeline_state.qvel;
 
-            pipelineStep(data_index, qpos_init, qvel_init, ctrl);
+            Vector12d ctrl = act2tau(qpos_init.tail<12>(), qvel_init.tail<12>(), action);
 
-            PipelineState pipeline_state = createTransformedState(data_index);
+            pipelineStep(d, qpos_init, qvel_init, ctrl);
+
+            PipelineState pipeline_state = createTransformedState(d);
             EnvState new_state = state_init;
 
             double scaled = std::min(config_.default_vx * (new_state.info.step * dt()) / config_.ramp_up_time, config_.default_vx);
@@ -492,7 +522,7 @@ namespace go2env
             Vector4d z_feet;
             for (size_t i = 0; i < 4; i++)
             {
-                z_feet[i] = d_[data_index]->site_xpos[feet_site_id_[i] * 3 + 2];
+                z_feet[i] = d->site_xpos[feet_site_id_[i] * 3 + 2];
             }
             Vector4d z_feet_tar = computeFootStep(new_state.info);
 
@@ -540,22 +570,29 @@ namespace go2env
                 }
             }
 
-            EnvState newState = state;
+            new_state.info.step += 1;
 
-            newState.info.step += 1;
+            new_state.pipeline_state = pipeline_state;
+            new_state.reward = reward;
+            new_state.done = done;
 
-            newState.pipeline_state = pipeline_state;
-            newState.reward = reward;
-            newState.done = done;
+            std::cout << "Step done" << std::endl;
 
-            return newState;
+            return new_state;
         }
 
         EnvState reset(std::mt19937_64 &rng)
         {
-            mj_resetData(m_, d_reset_);
-            Vector18d zero_dq(m_->nv) = Vector18d::Zero();
-            PipelineState pipeline_state = pipelineInit(m_, d_reset_, init_q_, zero_dq);
+            Vector18d zero_dq = Vector18d::Zero();
+            PipelineState pipeline_state;
+
+            mj_resetData(m_, d_main_);
+            pipeline_state = pipelineInit(d_main_, init_q_, zero_dq);
+            for (int i = 0; i < BATCH_SIZE; i++)
+            {
+                mj_resetData(m_, d_[i]);
+                pipelineInit(i, init_q_, zero_dq);
+            }
 
             StateInfo info;
             info.rng = rng;
@@ -578,11 +615,6 @@ namespace go2env
             return s;
         }
 
-        void resetDataToState(size_t data_index, const Vector19d &qpos, const Vector18d &qvel)
-        {
-            pipeline_init(m_, d_[data_index], qpos, qvel);
-        }
-
         // return the mjModel pointer
         mjModel *model() { return m_; }
 
@@ -595,34 +627,46 @@ namespace go2env
 
         Matrix12Bounds joint_range() const { return joint_range_; }
 
-        Matrix12Boundsjoint_torque_range() const { return joint_torque_range_; }
+        Matrix12Bounds joint_torque_range() const { return joint_torque_range_; }
 
     protected:
         PipelineState pipelineInit(size_t data_index, const Vector19d &qpos, const Vector18d &qvel)
         {
-            const mjData *d = d_[data_index];
+            return pipelineInit(d_[data_index], qpos, qvel);
+        }
+
+        PipelineState pipelineInit(mjData *d, const Vector19d &qpos, const Vector18d &qvel)
+        {
             copy_eigen_to_mujoco(d->qpos, qpos, 19);
             copy_eigen_to_mujoco(d->qvel, qvel, 18);
 
             mj_forward(m_, d);
-            return createTransformedState(data_index);
+            return createTransformedState(d);
         }
 
         PipelineState pipelineStep(size_t data_index, const Vector19d &qpos, const Vector18d &qvel, const Vector12d &ctrl)
         {
-            mjData *d = d_[data_index];
+            return pipelineStep(d_[data_index], qpos, qvel, ctrl);
+        }
+
+        PipelineState pipelineStep(mjData *d, const Vector19d &qpos, const Vector18d &qvel, const Vector12d &ctrl)
+        {
             copy_eigen_to_mujoco(d->qpos, qpos, 19);
             copy_eigen_to_mujoco(d->qvel, qvel, 18);
 
             copy_eigen_to_mujoco(d->ctrl, ctrl, 12);
 
             mj_step(m_, d);
-            return createTransformedState(data_index);
+            return createTransformedState(d);
         }
 
         PipelineState createTransformedState(size_t data_index) const
         {
-            const mjData *d = d_[data_index];
+            return createTransformedState(d_[data_index]);
+        }
+
+        PipelineState createTransformedState(mjData *d) const
+        {
             Vector19d qpos_out;
             Vector18d qvel_out;
             copy_mujoco_to_eigen(d->qpos, qpos_out, 19);
@@ -648,7 +692,7 @@ namespace go2env
             return PipelineState{qpos_out, qvel_out, x, xd};
         }
 
-        Vector4d computeFootStep(const StateInfo &info) const
+        Vector4d computeFootStep(const StateInfo &info)
         {
             Vector3d gp = kGaitParams_[gait_];
             double duty_ratio = gp[0];
@@ -661,11 +705,13 @@ namespace go2env
             return get_foot_step(duty_ratio, cadence, amplitude, phases, time_sec);
         }
 
-        Vector12d act2joint(const Vector12d &act) const
+        template <typename UDerived>
+        Vector12d act2joint(const Eigen::MatrixBase<UDerived> &act) const
         {
+            assert(act.rows() == 12 && "Action must be 12x1");
             size_t N = joint_range_.rows(); // e.g. 12
             Vector12d result(N);
-            Vector12d act_normalized = (act[i] * config_.action_scale + 1.0) / 2.0;
+            Vector12d act_normalized = (act * config_.action_scale + Vector12d::Constant(1.0)) / 2.0;
             for (size_t i = 0; i < N; i++)
             {
                 // scale to joint_range
@@ -683,8 +729,12 @@ namespace go2env
             return result;
         }
 
-        Vector12d act2tau(const Vector12d &qj, const Vector12d &qdj, const Vector12d &act) const
+        template <typename QJDerived, typename QdJDerived, typename UDerived>
+        Vector12d act2tau(const Eigen::MatrixBase<QJDerived> &qj, const Eigen::MatrixBase<QdJDerived> &qdj, const Eigen::MatrixBase<UDerived> &act) const
         {
+            assert(qj.rows() == 12 && "qj must be 12x1");
+            assert(qdj.rows() == 12 && "qdj must be 12x1");
+            assert(act.rows() == 12 && "Action must be 12x1");
             const size_t N = joint_range_.rows();
             Vector12d joint_target = act2joint(act);
 
@@ -739,7 +789,7 @@ namespace go2env
         UnitreeGo2EnvConfig config_;
 
         mjModel *m_ = nullptr;
-        mjData *d_reset_ = nullptr;
+        mjData *d_main_ = nullptr;
         mjData *d_[BATCH_SIZE];
 
         int torso_idx_;

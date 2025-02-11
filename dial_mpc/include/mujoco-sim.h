@@ -183,6 +183,11 @@ public:
 #endif
     }
 
+    double GetTime() const
+    {
+        return d->time;
+    }
+
 protected:
     void initializeImp()
     {
