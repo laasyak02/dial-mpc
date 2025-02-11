@@ -309,28 +309,7 @@ namespace dial
     return piecewiseCubicHermiteInterpolate(us, step_us, step_nodes);
   }
 
-  //////////////////////////////////////////////////////////////
-  // Softmax update (the only update_method from Python code: "mppi")
-  //////////////////////////////////////////////////////////////
-  // inline std::tuple<MatrixXd, VectorXd> softmax_update(
-  //     const VectorXd &weights, // shape (Nsample + 1,)
-  //     const std::vector<MatrixXd> &Y0s, // shape (Nsample, Hnode + 1, nu)
-  //     const VectorXd &sigma, // shape (Hnode + 1,)
-  //     const MatrixXd &mu_0t) // shape (Hnode + 1, nu)
-  // {
-  //   std::cout << "softmax_update called" << std::endl;
-
-  //   // Weighted average
-  //   MatrixXd Ybar = MatrixXd::Zero(mu_0t.rows(), mu_0t.cols());
-  //   for (int i = 0; i < (int)Y0s.size(); i++)
-  //   {
-  //     Ybar += weights(i) * Y0s[i];
-  //   }
-  //   std::cout << "softmax_update done" << std::endl;
-  //   return std::make_tuple(Ybar, sigma); // new_sigma = sigma (unchanged)
-  // }
-
-  // Function signature exactly as requested.
+  // Computes: mu_0tm1 = sum_n weights[n] * Y0s[n]  (with Y0s[n] of shape (Hnode+1, nu))
   inline std::tuple<Eigen::MatrixXd, Eigen::VectorXd>
   softmax_update(const Eigen::VectorXd &weights,
                  const std::vector<Eigen::MatrixXd> &Y0s,
@@ -340,8 +319,6 @@ namespace dial
     // Check that the number of weights matches the number of candidate matrices.
     if (weights.size() != static_cast<Eigen::Index>(Y0s.size()))
     {
-      std::cout << "weights.size() = " << weights.size() << std::endl;
-      std::cout << "Y0s.size() = " << Y0s.size() << std::endl;
       throw std::invalid_argument("Size of weights must equal the number of candidate matrices in Y0s.");
     }
 
@@ -386,11 +363,9 @@ namespace dial
   public:
     static const int NUMSAMPLES = NUMSAMPLES_;
 
-    MBDPI(const DialConfig &args, go2env::UnitreeGo2Env<NUMSAMPLES> &env)
+    MBDPI(const DialConfig &args, go2env::UnitreeGo2Env<NUMSAMPLES + 1> &env)
         : args_(args), env_(env), nu_(env.action_size())
     {
-      std::cout << "NUMSAMPLES = " << NUMSAMPLES << std::endl;
-
       // 1) Precompute sigmas_ for i in [0..Ndiffuse-1]
       double sigma0 = 1e-2, sigma1 = 1.0;
       double A = sigma0;
@@ -424,64 +399,32 @@ namespace dial
       }
     }
 
-    // // rollout_us: replicate exactly the Python version.
-    // // Return the entire time-sequence of rewards (length = us.rows())
-    // // plus a vector of pipeline states if needed.
-    // std::tuple<VectorXd, std::vector<go2env::EnvState>>
-    // rollout_us(const go2env::EnvState &state, const MatrixXd &us)
-    // {
-    //   int T = us.rows();
-    //   VectorXd rewards(T);
-    //   rewards.setZero();
-    //   std::vector<go2env::EnvState> pipeline_states;
-    //   pipeline_states.reserve(T);
-
-    //   go2env::EnvState cur = state;
-    //   for (int t = 0; t < T; t++)
-    //   {
-    //     cur = env_.step(cur, us.row(t).eval());
-    //     rewards(t) = cur.reward;
-    //     pipeline_states.push_back(cur);
-    //   }
-    //   return std::make_tuple(rewards, pipeline_states);
-    // }
-
-    // // Vectorized version: for each sample in all_Y0s, convert to "us", then rollout
-    // std::vector<VectorXd>
-    // rollout_us_batch(const go2env::EnvState &state, const std::vector<MatrixXd> &all_us)
-    // {
-    //   std::vector<VectorXd> rews_batch;
-    //   rews_batch.reserve(all_us.size());
-    //   for (const MatrixXd &us : all_us)
-    //   {
-    //     std::tuple<VectorXd, std::vector<go2env::EnvState>> res_rollout = rollout_us(state, us);
-    //     VectorXd rews = std::get<0>(res_rollout);
-    //     std::vector<go2env::EnvState> pipeline_states = std::get<1>(res_rollout);
-    //     rews_batch.push_back(rews);
-    //   }
-    //   return rews_batch;
-    // }
-
+    // Roll out the full control trajectories for each candidate.
+    // all_us: vector of matrices, each of shape (Hsample+1, nu)
+    // Returns: vector of reward vectors (each of length Hsample+1)
     std::vector<VectorXd> rollout_us_batch(const go2env::EnvState &state, const std::vector<MatrixXd> &all_us)
     {
-      std::cout << "rollout_us_batch called" << std::endl;
+      // Loop over all candidates (should be NUMSAMPLES+1 in total)
       std::vector<VectorXd> rews_batch;
       rews_batch.reserve(all_us.size()); // rews_batch should be Nsample+1 x Hsample+1
-      for (int i = 0; i < NUMSAMPLES; ++i)
+      for (int i = 0; i < all_us.size(); ++i)
       {
         rews_batch.push_back(VectorXd::Zero(args_.Hsample + 1));
         std::vector<go2env::EnvState> traj_sample_i = env_.stepTrajectory(i, state, all_us[i].transpose());
-        std::cout << "Trajectory sample " << i << " has " << traj_sample_i.size() << " steps" << std::endl;
         for (size_t t = 0; t < traj_sample_i.size(); ++t) // data locality sucks but whatever
         {
           rews_batch[i](t) = traj_sample_i[t].reward;
         }
-        std::cout << "Rewards for sample " << i << " are: " << rews_batch[i].transpose() << std::endl;
       }
-      std::cout << "rollout_us_batch done" << std::endl;
       return rews_batch;
     }
 
+    // reverse_once: one step of reverse diffusion.
+    //   - state: current environment state
+    //   - rng: random number generator (passed by reference)
+    //   - Ybar_i: current nominal control nodes (shape: Hnode+1 x nu)
+    //   - noise_scale: vector (length Hnode+1)
+    // Returns: tuple (Ybar, info), where Ybar is updated nodes.
     std::tuple<MatrixXd, ReverseInfo>
     reverse_once(const go2env::EnvState &state,
                  std::mt19937_64 &rng,
@@ -489,7 +432,7 @@ namespace dial
                  const VectorXd &noise_scale)
     {
       // 1) Sample from q_i
-      // Y0s has shape (Nsample, Hnode+1, nu), plus one more for the appended Ybar_i
+      // Generate NUMSAMPLES candidates (each is a matrix of shape (Hnode+1, nu))
       std::normal_distribution<double> dist(0.0, 1.0);
       std::vector<MatrixXd> Y0s(NUMSAMPLES);
 
@@ -505,19 +448,21 @@ namespace dial
           }
         }
         MatrixXd candidate = Ybar_i + eps;
-        // fix first control
+        // Fix the first node (control) to remain unchanged.
         candidate.row(0) = Ybar_i.row(0);
         Y0s[s] = candidate;
       }
 
-      // Append Ybar_i as "last sample"
+      // Append Ybar_i as the last candidate so that total candidates = NUMSAMPLES+1.
       std::vector<MatrixXd> all_Y0s = Y0s;
-      all_Y0s.push_back(Ybar_i); // all_Y0s now has shape (Nsample+1, Hnode+1, nu)
+      all_Y0s.push_back(Ybar_i);
 
-      std::cout << "all_Y0s dimensions: " << all_Y0s.size() << " x " << all_Y0s[0].rows() << " x " << all_Y0s[0].cols() << std::endl;
-      std::cout << "all_Y0s dimensions SHOULD be: " << NUMSAMPLES + 1 << " x " << args_.Hsample + 1 << " x " << nu_ << std::endl;
+      // std::cout << "Candidate node trajectories dimensions: " << all_Y0s.size()
+      //           << " x " << all_Y0s[0].rows() << " x " << all_Y0s[0].cols() << std::endl;
+      // std::cout << "Expected dimensions: " << (NUMSAMPLES + 1) << " x " << (args_.Hnode + 1) << " x " << nu_ << std::endl;
+      // Expected: (NUMSAMPLES+1) x (Hnode+1) x (nu)
 
-      // 2) Clip to [-1,1]
+      // 2) Clip each candidate to the range [-1, 1].
       for (MatrixXd &mat : all_Y0s)
       {
         for (int r = 0; r < mat.rows(); r++)
@@ -532,97 +477,84 @@ namespace dial
         }
       }
 
-      // 3) Convert each Y0 to batch_us
-      std::vector<MatrixXd> batch_us(all_Y0s.size());
+      // 3) Convert each candidate from node-space to a full control trajectory.
+      // Each candidate: (Hnode+1, nu) -> (Hsample+1, nu)
+      std::vector<MatrixXd> batch_us;
 
-      for (int i = 0; i < (int)all_Y0s.size(); i++)
+      batch_us.reserve(all_Y0s.size());
+      for (size_t i = 0; i < all_Y0s.size(); i++)
       {
-        batch_us[i] = node2u(all_Y0s[i], step_nodes_, step_us_);
+        Eigen::MatrixXd u_traj = node2u(all_Y0s[i], step_nodes_, step_us_);
+        batch_us.push_back(u_traj);
       }
-      // batch_us has shape (Nsample+1, Hsample+1, nu)
 
-      std::cout << "batch_us dimensions: " << batch_us.size() << " x " << batch_us[0].rows() << " x " << batch_us[0].cols() << std::endl;
-      std::cout << "batch_us dimensions SHOULD be: " << NUMSAMPLES + 1 << " x " << args_.Hsample + 1 << " x " << nu_ << std::endl;
+      // std::cout << "Batch control trajectories dimensions: " << batch_us.size()
+      //           << " x " << batch_us[0].rows() << " x " << batch_us[0].cols() << std::endl;
+      // std::cout << "Expected dimensions: " << (NUMSAMPLES + 1) << " x " << (args_.Hsample + 1)
+      //           << " x " << nu_ << std::endl;
+      // Expected: (NUMSAMPLES+1) x (Hsample+1) x nu
 
-      // 4) Rollout for each sample
+      // 4) Roll out each candidate trajectory.
       std::vector<VectorXd> rews_batch = rollout_us_batch(state, batch_us);
 
-      // The last sample is Ybar_i
-      VectorXd rews_Ybar_i = rews_batch.back(); // shape (Hsample+1)
+      // 5) Compute the average reward for the nominal candidate (the last one).
+      Eigen::VectorXd rews_Ybar_i = rews_batch.back(); // shape: (Hsample+1)
       double rew_Ybar_i = rews_Ybar_i.mean();
 
-      // 5) Compute each sample's average reward and std
-      // Python code:
-      //   rews = rewss.mean(axis=-1)  => average across time
-      //   rew_Ybar_i = rewss[-1].mean()
-      //   logp0 = (rews - rew_Ybar_i) / rews.std(axis=-1) / temp_sample
-      // where rews.std(axis=-1) is the stdev of each sample's rews across time.
-      int Nall = (int)rews_batch.size(); // = Nsample+1
-      VectorXd meanRews(Nall), stdRews(Nall);
-
+      // 6) For each candidate, compute the mean reward and its standard deviation (over time).
+      int Nall = static_cast<int>(rews_batch.size()); // should be NUMSAMPLES+1
+      Eigen::VectorXd meanRews(Nall), stdRews(Nall);
       for (int s = 0; s < Nall; s++)
       {
         double m = rews_batch[s].mean();
         meanRews(s) = m;
-        // compute stdev across time
         double sum_sq = 0.0;
         int T = rews_batch[s].size();
         for (int t = 0; t < T; t++)
         {
-          double diff = (rews_batch[s](t) - m);
+          double diff = rews_batch[s](t) - m;
           sum_sq += diff * diff;
         }
-        double var = sum_sq / (double)T;
+        double var = sum_sq / T;
         double stdev = (var > 1e-14) ? std::sqrt(var) : 1e-7;
         stdRews(s) = stdev;
       }
 
-      // 6) logp0
-      VectorXd logp0(Nall);
-
+      // 7) Compute log probabilities.
+      Eigen::VectorXd logp0(Nall);
       for (int s = 0; s < Nall; s++)
       {
         logp0(s) = (meanRews(s) - rew_Ybar_i) / (stdRews(s) * args_.temp_sample);
       }
 
-      // 7) weights = softmax(logp0)
+      // 8) Compute softmax weights.
       double max_val = logp0.maxCoeff();
-      VectorXd exps = (logp0.array() - max_val).exp();
+      Eigen::VectorXd exps = (logp0.array() - max_val).exp();
       double sum_exps = exps.sum();
-      VectorXd weights = exps / sum_exps; // length = Nsample+1
+      Eigen::VectorXd weights = exps / sum_exps; // length = NUMSAMPLES+1
 
-      // 8) Ybar = sum_n w(n)*Y0s[n]
-      std::cout << "weights dimensions: " << weights.size() << std::endl;
-      std::cout << "all_Y0s dimensions: " << all_Y0s.size() << " x " << all_Y0s[0].rows() << " x " << all_Y0s[0].cols() << std::endl;
-      std::cout << "noise_scale dimensions: " << noise_scale.size() << std::endl;
-      std::cout << "Ybar_i dimensions: " << Ybar_i.rows() << " x " << Ybar_i.cols() << std::endl;
-      std::tuple<MatrixXd, VectorXd> res_softmax = softmax_update(weights, all_Y0s, noise_scale, Ybar_i);
-      MatrixXd Ybar = std::get<0>(res_softmax);
-      VectorXd new_sigma = std::get<1>(res_softmax);
+      // 9) Update Ybar using the softmax_update function.
+      std::tuple<Eigen::MatrixXd, Eigen::VectorXd> res_softmax = softmax_update(weights, all_Y0s, noise_scale, Ybar_i);
+      Eigen::MatrixXd Ybar = std::get<0>(res_softmax);
+      Eigen::VectorXd new_sigma = std::get<1>(res_softmax);
 
-      // 9) Weighted qbar, qdbar, xbar placeholders
-      // The Python code does qbar, qdbar, xbar from pipeline states.
-      // We do placeholders. If you want real data, store states from each rollout.
-      MatrixXd qbar = MatrixXd::Zero(args_.Hnode + 1, 1);
-      MatrixXd qdbar = MatrixXd::Zero(args_.Hnode + 1, 1);
-      MatrixXd xbar = MatrixXd::Zero(args_.Hnode + 1, 1);
+      // 10) (Placeholders for qbar, qdbar, xbar)
+      Eigen::MatrixXd qbar = Eigen::MatrixXd::Zero(args_.Hnode + 1, 1);
+      Eigen::MatrixXd qdbar = Eigen::MatrixXd::Zero(args_.Hnode + 1, 1);
+      Eigen::MatrixXd xbar = Eigen::MatrixXd::Zero(args_.Hnode + 1, 1);
 
       // Fill ReverseInfo
       ReverseInfo info;
-      info.rews = meanRews; // shape (Nsample+1)
+      info.rews = meanRews; // vector of length (NUMSAMPLES+1)
       info.qbar = qbar;
       info.qdbar = qdbar;
       info.xbar = xbar;
       info.new_noise_scale = new_sigma;
 
-      std::cout << "reverse_once done" << std::endl;
-
       return std::make_tuple(Ybar, info);
     }
 
-    // "reverse" calls "reverse_once" from i = Ndiffuse-1 down to 1, same as Python
-    // (which does "for i in range(self.args.Ndiffuse - 1, 0, -1)").
-    // For each iteration, we pass "sigmas_[i] * ones(Hnode+1)".
+    // reverse: iteratively apply reverse_once from i = Ndiffuse-1 down to 1.
     MatrixXd reverse(const go2env::EnvState &state,
                      const MatrixXd &YN,
                      std::mt19937_64 &rng)
@@ -632,7 +564,6 @@ namespace dial
       {
         VectorXd scale = VectorXd::Constant(args_.Hnode + 1, sigmas_(i));
         std::tuple<MatrixXd, ReverseInfo> res_reverse = reverse_once(state, rng, Yi, scale);
-
         MatrixXd newY = std::get<0>(res_reverse);
         ReverseInfo info = std::get<1>(res_reverse);
 
@@ -641,34 +572,30 @@ namespace dial
       return Yi;
     }
 
-    // shift: replicate "shift" in Python
-    //   u = node2u(Y)
-    //   u = roll(u, -1, axis=0)
-    //   u[-1] = 0
-    //   Y = u2node(u)
-    MatrixXd shift(const MatrixXd &Y)
+    // shift: Convert node parameters to full control trajectory, roll by one time step,
+    // set the final control to zero, then convert back to node parametrization.
+    Eigen::MatrixXd shift(const Eigen::MatrixXd &Y)
     {
-      MatrixXd u = node2u(Y, step_nodes_, step_us_);
-      MatrixXd u_shifted = u;
-      // shift up by 1
+      Eigen::MatrixXd u = node2u(Y, step_nodes_, step_us_);
+      Eigen::MatrixXd u_shifted = u;
       for (int i = 0; i < u.rows() - 1; i++)
       {
         u_shifted.row(i) = u.row(i + 1);
       }
       u_shifted.row(u.rows() - 1).setZero();
-      MatrixXd Ynew = u2node(u_shifted, step_us_, step_nodes_);
+      Eigen::MatrixXd Ynew = u2node(u_shifted, step_us_, step_nodes_);
       return Ynew;
     }
 
   public:
     DialConfig args_;
-    go2env::UnitreeGo2Env<NUMSAMPLES> &env_;
+    go2env::UnitreeGo2Env<NUMSAMPLES + 1> &env_;
     int nu_;
 
-    VectorXd sigmas_;        // length Ndiffuse
-    VectorXd sigma_control_; // length Hnode+1
-    VectorXd step_us_;       // length Hsample+1
-    VectorXd step_nodes_;    // length Hnode+1
+    Eigen::VectorXd sigmas_;        // length: Ndiffuse
+    Eigen::VectorXd sigma_control_; // length: Hnode+1
+    Eigen::VectorXd step_us_;       // length: Hsample+1
+    Eigen::VectorXd step_nodes_;    // length: Hnode+1
   };
 
 } // namespace dial

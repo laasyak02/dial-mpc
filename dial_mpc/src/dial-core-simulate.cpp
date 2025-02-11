@@ -10,7 +10,7 @@ struct MultiBodyState
 void loop(const mjModel *m, mjData *d);
 
 template <int NUMSAMPLES>
-void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2Env<NUMSAMPLES> &env);
+void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2Env<NUMSAMPLES + 1> &env);
 
 Eigen::VectorXd act2joint(const Eigen::VectorXd &act, const mjModel *m, const mjData *d);
 
@@ -61,7 +61,7 @@ int main()
     go2_config.timestep = 0.0025;
 
     const std::string model_path = "/home/quant/dial_mpc_ws/src/dial-mpc/models/unitree_go2/mjx_scene_force.xml";
-    go2env::UnitreeGo2Env<NUMBER_OF_SAMPLES> env(go2_config, model_path);
+    go2env::UnitreeGo2Env<NUMBER_OF_SAMPLES + 1> env(go2_config, model_path);
 
     joint_range = env.joint_range();
     joint_torque_range = env.joint_torque_range();
@@ -80,7 +80,7 @@ int main()
 }
 
 template <int NUMSAMPLES>
-void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2Env<NUMSAMPLES> &env)
+void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2Env<NUMSAMPLES + 1> &env)
 {
     // Create MBDPI
     dial::MBDPI<NUMSAMPLES> mbdpi(config, env);

@@ -465,10 +465,6 @@ namespace go2env
         template <typename Derived>
         std::vector<EnvState> stepTrajectory(size_t data_index, const EnvState &state_init, const Eigen::MatrixBase<Derived> &actions)
         {
-            std::cout << "Step trajectory called for data index: " << data_index << std::endl;
-
-            std::cout << "Actions size: " << actions.rows() << "x" << actions.cols() << std::endl;
-
             assert(actions.rows() == 12 && "Actions must be 12xN");
             std::vector<EnvState> states;
             states.reserve(actions.cols());
@@ -478,8 +474,6 @@ namespace go2env
                 state = step(data_index, state, actions.col(i));
                 states.push_back(state);
             }
-
-            std::cout << "Step trajectory done" << std::endl;
             return states;
         }
 
@@ -498,8 +492,6 @@ namespace go2env
         template <typename Derived>
         EnvState step(mjData *d, const EnvState &state_init, const Eigen::MatrixBase<Derived> &action)
         {
-            std::cout << "Step called" << std::endl;
-
             assert(action.rows() == 12 && "Action must be 12x1");
 
             Vector19d qpos_init = state_init.pipeline_state.qpos;
@@ -575,8 +567,6 @@ namespace go2env
             new_state.pipeline_state = pipeline_state;
             new_state.reward = reward;
             new_state.done = done;
-
-            std::cout << "Step done" << std::endl;
 
             return new_state;
         }
