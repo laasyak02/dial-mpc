@@ -1,10 +1,12 @@
-#include "simulation.h"
+#pragma once
 
 #include <GLFW/glfw3.h>
 #include <mujoco/mujoco.h>
 
 #include <memory>
 #include <iostream>
+
+// Mujoco simulation with rendering
 
 static GLFWwindow *window;
 static mjvCamera cam;  // abstract camera
@@ -99,8 +101,6 @@ void scroll(GLFWwindow *window, double xoffset, double yoffset)
     mjv_moveCamera(m, mjMOUSE_ZOOM, 0, -0.05 * yoffset, &scn, &cam);
 }
 
-void dummy_loop() {}
-
 /**
  * Must be called after MujocoEnvironment().
  */
@@ -109,12 +109,12 @@ void mjcontroller(const mjModel *m, mjData *d)
     user_loop_func(m, d);
 }
 
-class MujocoEnvironment : public Simulation
+class MujocoEnvironment
 {
 public:
-    MujocoEnvironment(mjfGeneric loop_func, std::function<void(void)> exit_func = []() {}) : Simulation(std::bind(dummy_loop), exit_func)
+    MujocoEnvironment(mjfGeneric ctrl_func)
     {
-        user_loop_func = loop_func;
+        user_loop_func = ctrl_func;
     }
 
     MujocoEnvironment(const MujocoEnvironment &) = delete;
@@ -123,7 +123,7 @@ public:
 
     ~MujocoEnvironment() = default;
 
-    void Initialize(const std::string &model_path) override
+    void Initialize(const std::string &model_path)
     {
         char error[1000] = "Could not load XML model";
         m = mj_loadXML(model_path.c_str(), nullptr, error, 1000);
@@ -143,51 +143,32 @@ public:
         initializeImp();
     }
 
-    void Configure(void *config) override
+    void Loop()
     {
-    }
-
-    void Finalize() override
-    {
-    }
-
-    void LoopPrologue() override
-    {
-        mjtNum simstart = d->time;
-        while (d->time - simstart < 1.0 / 60.0)
+        while (true)
         {
-            mj_step(m, d);
+            mjtNum simstart = d->time;
+            while (d->time - simstart < 1.0 / 60.0)
+            {
+                mj_step(m, d);
+            }
+
+            mjrRect viewport = {0, 0, 0, 0};
+            glfwGetFramebufferSize(window, &viewport.width, &viewport.height);
+
+            // update scene and render
+            mjv_updateScene(m, d, &opt, NULL, &cam, mjCAT_ALL, &scn);
+            mjr_render(viewport, &scn, &con);
+
+            // swap OpenGL buffers (blocking call due to v-sync)
+            glfwSwapBuffers(window);
+
+            // process pending GUI events, call GLFW callbacks
+            glfwPollEvents();
         }
-
-        mjrRect viewport = {0, 0, 0, 0};
-        glfwGetFramebufferSize(window, &viewport.width, &viewport.height);
-
-        // update scene and render
-        mjv_updateScene(m, d, &opt, NULL, &cam, mjCAT_ALL, &scn);
-        mjr_render(viewport, &scn, &con);
-
-        // swap OpenGL buffers (blocking call due to v-sync)
-        glfwSwapBuffers(window);
-
-        // process pending GUI events, call GLFW callbacks
-        glfwPollEvents();
     }
 
-    void LoopEpilogue() override
-    {
-    }
-
-    void SetMotorValue(int id, double u)
-    {
-        d->ctrl[id] = u;
-    }
-
-    double GetTime() const
-    {
-        return d->time;
-    }
-
-    void Exit() override
+    void Exit()
     {
         mjv_freeScene(&scn);
         mjr_freeContext(&con);
@@ -202,7 +183,7 @@ public:
 #endif
     }
 
-public:
+protected:
     void initializeImp()
     {
         // init GLFW

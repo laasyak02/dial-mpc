@@ -1,3 +1,5 @@
+#pragma once
+
 #include "unitree-go2-env.h"
 
 #include <Eigen/Dense>
