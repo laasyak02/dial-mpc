@@ -1,6 +1,7 @@
 #pragma once
 
 #include "unitree-go2-env.h"
+#include <omp.h>
 
 #include <Eigen/Dense>
 #include <unsupported/Eigen/Splines>
@@ -49,7 +50,7 @@ namespace dial
     int Ndiffuse_init = 10;              // used at the first iteration
     double temp_sample = 0.05;           // temperature
     int n_steps = 400;                   // number of rollout steps
-    double ctrl_dt = 0.0025;               // control dt
+    double ctrl_dt = 0.0025;             // control dt
     double horizon_diffuse_factor = 0.9; // multiplies sigma_control
     double traj_diffuse_factor = 0.5;    // factor^i in each "reverse_once" iteration
   };
@@ -404,17 +405,27 @@ namespace dial
     std::vector<VectorXd> rollout_us_batch(const go2env::EnvState &state, const std::vector<MatrixXd> &all_us)
     {
       // Loop over all candidates (should be NUMSAMPLES+1 in total)
-      std::vector<VectorXd> rews_batch;
-      rews_batch.reserve(all_us.size()); // rews_batch should be Nsample+1 x Hsample+1
-      for (int i = 0; i < all_us.size(); ++i)
+      const size_t num_samples = all_us.size();
+      std::vector<Eigen::VectorXd> rews_batch(num_samples);
+
+      // auto start_time = std::chrono::high_resolution_clock::now();
+// Parallelize the loop over candidates.
+#pragma omp parallel for schedule(dynamic) num_threads(16)
+      for (int i = 0; i < static_cast<int>(num_samples); ++i)
       {
-        rews_batch.push_back(VectorXd::Zero(args_.Hsample + 1));
-        std::vector<go2env::EnvState> traj_sample_i = env_.stepTrajectory(i, state, all_us[i]);
-        for (size_t t = 0; t < traj_sample_i.size(); ++t) // data locality sucks but whatever
+        // Run the simulation for the i-th candidate.
+        std::vector<go2env::EnvState> traj_sample = env_.stepTrajectory(i, state, all_us[i]);
+
+        // Allocate and initialize the reward vector.
+        rews_batch[i] = Eigen::VectorXd::Zero(args_.Hsample + 1);
+
+        // Fill in the reward trajectory.
+        for (size_t t = 0; t < traj_sample.size(); ++t)
         {
-          rews_batch[i](t) = traj_sample_i[t].reward;
+          rews_batch[i](t) = traj_sample[t].reward;
         }
       }
+      // std::cout << "Average rollout time per sample: " << std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start_time).count() / (double)num_samples << "us" << std::endl;
       return rews_batch;
     }
 
@@ -436,6 +447,7 @@ namespace dial
       std::vector<MatrixXd> Y0s;
       Y0s.reserve(NUMSAMPLES);
 
+      // auto start_time_sampling = std::chrono::high_resolution_clock::now();
       for (int s = 0; s < NUMSAMPLES; s++)
       {
         std::mt19937_64 *rng_tmp = new std::mt19937_64(std::chrono::system_clock::now().time_since_epoch().count() + s);
@@ -455,6 +467,7 @@ namespace dial
 
         delete rng_tmp;
       }
+      // std::cout << "Sampling time in reverse_once: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time_sampling).count() << "ms" << std::endl;
 
       // Append Ybar_i as the last candidate so that total candidates = NUMSAMPLES+1.
       std::vector<MatrixXd> all_Y0s = Y0s;
@@ -466,6 +479,7 @@ namespace dial
       // Expected: (NUMSAMPLES+1) x (Hnode+1) x (nu)
 
       // 2) Clip each candidate to the range [-1, 1].
+      // auto start_time_clip = std::chrono::high_resolution_clock::now();
       for (MatrixXd &mat : all_Y0s)
       {
         for (int r = 0; r < mat.rows(); r++)
@@ -479,9 +493,11 @@ namespace dial
           }
         }
       }
+      // std::cout << "Clipping time in reverse_once: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time_clip).count() << "ms" << std::endl;
 
       // 3) Convert each candidate from node-space to a full control trajectory.
       // Each candidate: (Hnode+1, nu) -> (Hsample+1, nu)
+      // auto start_time_node2u = std::chrono::high_resolution_clock::now();
       std::vector<MatrixXd> batch_us;
       batch_us.reserve(all_Y0s.size());
       for (size_t i = 0; i < all_Y0s.size(); i++)
@@ -489,6 +505,7 @@ namespace dial
         Eigen::MatrixXd u_traj = node2u(all_Y0s[i], step_nodes_, step_us_);
         batch_us.push_back(u_traj);
       }
+      // std::cout << "Node2u time in reverse_once: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time_node2u).count() << "ms" << std::endl;
 
       // std::cout << "Batch control trajectories dimensions: " << batch_us.size()
       //           << " x " << batch_us[0].rows() << " x " << batch_us[0].cols() << std::endl;
@@ -497,7 +514,9 @@ namespace dial
       // Expected: (NUMSAMPLES+1) x (Hsample+1) x nu
 
       // 4) Roll out each candidate trajectory.
+      // auto start_time_rollout_us = std::chrono::high_resolution_clock::now();
       std::vector<VectorXd> rews_batch = rollout_us_batch(state, batch_us);
+      // std::cout << "Rollout time in reverse_once: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time_rollout_us).count() << "ms" << std::endl;
 
       // 5) Compute the average reward for the nominal candidate (the last one).
       Eigen::VectorXd rews_Ybar_i = rews_batch.back(); // shape: (Hsample+1)

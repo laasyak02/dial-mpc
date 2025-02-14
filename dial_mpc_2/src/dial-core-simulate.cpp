@@ -31,7 +31,7 @@ bool controller_started = false;
 double mj_start_time = 0.0;
 double curr_time = 0.0;
 
-static const int NUMBER_OF_SAMPLES = 2048; //50
+static const int NUMBER_OF_SAMPLES = 2048;
 
 //////////////////////////////////////////////////////////////
 // Main
@@ -44,34 +44,54 @@ int main()
     // cfg.Nsample = 2048; // added as a template parameter instead
     cfg.Ndiffuse = 2;
     cfg.Ndiffuse_init = 10;
-    cfg.temp_sample = 0.06; //0.05
+    cfg.temp_sample = 0.05;
     cfg.n_steps = 200;
-    cfg.ctrl_dt = 0.02; //0.0025
+    cfg.ctrl_dt = 0.02;
     cfg.horizon_diffuse_factor = 0.9;
     cfg.traj_diffuse_factor = 0.5;
 
     go2_config.kp = 30.0;
-    go2_config.kd = 0.0; //1.0
+    go2_config.kd = 0.0;
     go2_config.action_scale = 1.0;
-    go2_config.default_vx = 1.0; //0.0
+    go2_config.default_vx = 0.0;
     go2_config.default_vy = 0.0;
     go2_config.default_vyaw = 0.0;
-    go2_config.ramp_up_time = 2.0; //1.0
-    go2_config.gait = "trot";
-    go2_config.timestep = 0.02; //0.0025
+    go2_config.ramp_up_time = 1.0;
+    go2_config.gait = "stand";
+    go2_config.timestep = 0.02;
 
     const std::string model_path = "/home/laasya/dial-mpc-python/dial_mpc/models/unitree_go2/mjx_scene_force.xml";
+    // const std::string model_path = "/home/quant/dial_mpc_ws/src/dial-mpc/models/unitree_go2/mjx_scene_force.xml";
+    
     go2env::UnitreeGo2Env<NUMBER_OF_SAMPLES + 1> env(go2_config, model_path);
 
     joint_range = env.joint_range();
     joint_torque_range = env.joint_torque_range();
 
+    auto start_time = std::chrono::high_resolution_clock::now();
     ComputeControlTrajectory<NUMBER_OF_SAMPLES>(cfg, env);
+    std::cout << "ComputeControlTrajectory time: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time).count() << "ms" << std::endl;
 
     mjEnv.Initialize(model_path);
     controller_started = true;
-    mjEnv.GetModel()->opt.timestep = go2_config.timestep;
-    mj_start_time = mjEnv.GetData()->time;
+
+    mjModel *m = mjEnv.GetModel();
+    mjData *d = mjEnv.GetData();
+
+    m->opt.timestep = go2_config.timestep;
+
+    int home_id = mj_name2id(m, mjOBJ_KEY, "home");
+
+    for (size_t i = 0; i <m->nq; i++)
+    {
+        d->qpos[i] =m->key_qpos[home_id * m->nq + i];
+    }
+    for (size_t i = 7; i < m->nq; i++)
+    {
+        d->qpos[i] = m->key_qpos[home_id * m->nq + i];
+    }
+
+    mj_start_time = d->time;
 
     mjEnv.Loop();
 
@@ -106,11 +126,19 @@ void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2
     go2env::EnvState cur_state = state_init;
     all_states.push_back(cur_state);
 
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    double avg_t_env_step = 0.0;
+    double avg_t_shift = 0.0;
+    double avg_t_reverse_once = 0.0;
     for (int t = 0; t < config.n_steps; t++)
     {
         // Step environment with the first row of Y0
         Eigen::VectorXd action = Y0.row(0);
+
+        auto start_time_env_step = std::chrono::high_resolution_clock::now();
         go2env::EnvState next_state = env.step(cur_state, action);
+        avg_t_env_step += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time_env_step).count();
 
         /*
         std::cout<<"cur_state: "<<std::endl;
@@ -160,7 +188,9 @@ void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2
         all_states.push_back(next_state);
 
         // shift Y0
+        auto start_time_shift = std::chrono::high_resolution_clock::now();
         Y0 = mbdpi.shift(Y0);
+        avg_t_shift += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time_shift).count();
 
         // how many times to do "reverse_once"?
         int n_diffuse = (t == 0) ? config.Ndiffuse_init : config.Ndiffuse;
@@ -181,7 +211,11 @@ void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2
                 factor(h) = mbdpi.sigma_control_(h) * std::pow(config.traj_diffuse_factor, (double)i);
             }
             // call reverse_once
+
+            auto start_time_reverse_once = std::chrono::high_resolution_clock::now();
             std::tuple<Eigen::MatrixXd, dial::ReverseInfo> res_reverse = mbdpi.reverse_once(next_state, rng, Y0, factor);
+            avg_t_reverse_once += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time_reverse_once).count();
+
             Eigen::MatrixXd newY = std::get<0>(res_reverse);
             dial::ReverseInfo info = std::get<1>(res_reverse);
             Y0 = newY;
@@ -202,6 +236,10 @@ void ComputeControlTrajectory(const dial::DialConfig &config, go2env::UnitreeGo2
         std::cout << "Step " << t << " done" << std::endl;
         cur_state = next_state;
     }
+    std::cout << "Average time per environment step: " << avg_t_env_step / (double)config.n_steps << "us" << std::endl;
+    std::cout << "Average time per shift: " << avg_t_shift / (double)config.n_steps << "us" << std::endl;
+    std::cout << "Average time per reverse_once: " << avg_t_reverse_once / (double)config.n_steps << "us" << std::endl;
+    std::cout << "Average time per mpc step: " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time).count() / (double)config.n_steps << "ms" << std::endl;
 
     // Summarize
     double sum_rew = 0.0;
