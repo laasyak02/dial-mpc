@@ -1,6 +1,10 @@
 #ifndef __galileo_reactive_wbc_base_hpp__
 #define __galileo_reactive_wbc_base_hpp__
 
+#include "galileo/reactive/fwd.hpp"
+#include "galileo/reactive/task.hpp"
+#include "galileo/multibody/end-effectors.hpp"
+
 #include <pinocchio/fwd.hpp>
 #include <pinocchio/algorithm/fwd.hpp>
 #include <pinocchio/multibody/data.hpp>
@@ -16,10 +20,6 @@
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 #include <pinocchio/parsers/mjcf.hpp>
-
-#include "galileo/reactive/fwd.hpp"
-#include "galileo/reactive/task.hpp"
-#include "galileo/multibody/end-effectors.hpp"
 
 #include <qpOASES.hpp>
 #include <memory>
@@ -60,7 +60,7 @@ namespace galileo
             {
             }
 
-            WBCBase(Model model, const Info &info, const std::vector<galileo::EndEffector> &ees) // changed multibody::EndEffector to galileo::EndEffector
+            WBCBase(Model model, const Info &info, const std::vector<EndEffector> &ees)
                 : model_(model),
                   data_measured_(model_),
                   data_desired_(model_),
@@ -78,21 +78,19 @@ namespace galileo
 
                 control_limits_ = vector3_t::Constant(3, 24);
 
-                std::cout << "WBCBase created (in package)" << std::endl;
+                std::cout << "WBCBase created" << std::endl;
             }
 
             template <typename DesStateVector, typename DesControlVector, typename RBDStateVector>
             vector_t update(const Eigen::MatrixBase<DesStateVector> &stateDesired, const Eigen::MatrixBase<DesControlVector> &controlDesired, const Eigen::MatrixBase<RBDStateVector> &rbdStateMeasured, size_t mode, NumScalar period)
             {
+                std::cout << "Inside Update\n";
                 auto start = std::chrono::high_resolution_clock::now();
                 updateMeasured(rbdStateMeasured.derived());
                 updateDesired(stateDesired.derived(), controlDesired.derived());
 
-                std::cout << "Before calling formulateConstraints\n";
-
                 TaskDefault<NumScalar> constraints = std::move(formulateConstraints());
                 // TaskDefault<NumScalar> constraints = std::move(formulateFloatingBaseEomTask());
-                std::cout << "After calling formulateConstraints\n";
 
                 size_t numConstraints = constraints.b_.size() + constraints.f_.size();
 
@@ -107,9 +105,7 @@ namespace galileo
                     constraints.f_;
 
                 // Cost
-                std::cout << "Before calling formulateWeightedTasks\n";
                 TaskDefault<NumScalar> weighedTask = std::move(formulateWeightedTasks(stateDesired, controlDesired, period));
-                std::cout << "After calling formulateWeightedTasks\n";
                 Eigen::Matrix<NumScalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> H = weighedTask.a_.transpose() * weighedTask.a_;
                 vector_t g = -weighedTask.a_.transpose() * weighedTask.b_;
 
@@ -212,7 +208,6 @@ namespace galileo
 
             TaskDefault<NumScalar> formulateConstraints()
             {
-                std::cout << "Inside formulateConstraints\n";
                 return taskVertcat(
                     std::move(formulateFloatingBaseEomTask()),
                     std::move(taskVertcat(
@@ -238,7 +233,6 @@ namespace galileo
             template <typename DesStateVector, typename DesControlVector>
             TaskDefault<NumScalar> formulateWeightedTasks(const Eigen::MatrixBase<DesStateVector> &stateDesired, const Eigen::MatrixBase<DesControlVector> &controlDesired, NumScalar period)
             {
-                std::cout << "Inside formulateWeightedTasks\n";
                 return taskVertcat(
                     std::move(formulateSwingLegTask() * weightSwingLeg_),
                     std::move(taskVertcat(
@@ -365,7 +359,7 @@ namespace galileo
                 // vector6_t pose_err = pinocchio::log6(iMd).toVector();
 
                 vector3_t pos_error = pos_desired - data_measured_.oMf[0].translation();
-                vector6_t pose_err;
+		vector6_t pose_err;
                 pose_err << pos_error(0), pos_error(1), pos_error(2), 0, 0, 0; // simplified for now
 
                 vector_t vel_measured = pinocchio::getFrameVelocity(model, data_measured_, model.getFrameId("base", pinocchio::BODY), pinocchio::LOCAL_WORLD_ALIGNED).toVector();
@@ -452,7 +446,7 @@ namespace galileo
 
             Info info_;
 
-            std::vector<galileo::EndEffector> ees_; // changed multibody::EndEffector to galileo::EndEffector
+            std::vector<EndEffector> ees_;
 
             std::vector<bool> contact_flag_;
 

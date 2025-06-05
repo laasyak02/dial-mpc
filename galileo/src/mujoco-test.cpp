@@ -4,12 +4,9 @@
 #include <std_msgs/Float64.h>
 
 #include <iostream>
-
-#include <galileo/reactive/wbc-base.hpp>
-
 #include <galileo/simulator/mujoco/mujoco-simulator.hpp>
 // #include <galileo/reactive/wbc-base4.hpp>
-
+#include <galileo/reactive/wbc-base.hpp>
 
 #include <chrono>
 #include <thread>
@@ -28,8 +25,7 @@ reactive::WBCBase<double> wbc_base;
 ModelType model;
 DataType data;
 
-std::vector<galileo::EndEffector> ees; // changed multibody::EndEffector to galileo::EndEffector
-// Eigen::Vector<double, 12> static_force;
+std::vector<EndEffector> ees;
 Eigen::Matrix<double, 12, 1> static_force;
 
 Eigen::VectorXd state_desired;
@@ -37,50 +33,45 @@ Eigen::VectorXd control_desired;
 
 bool controller_started = false;
 
-class ROSNode {
-    public:
-        float lastReceivedValue;
-        ros::Subscriber testSubscriber;
+// class ROSNode {
+//     public:
+//         float lastReceivedValue;
+//         ros::Subscriber testSubscriber;
     
-        ROSNode(ros::NodeHandle& nh) {
-            testSubscriber = nh.subscribe("test_topic", 10, &ROSNode::callback, this);
-            lastReceivedValue = 0.0;
-        }
+//         ROSNode(ros::NodeHandle& nh) {
+//             testSubscriber = nh.subscribe("test_topic", 10, &ROSNode::callback, this);
+//             lastReceivedValue = 0.0;
+//         }
     
-        void callback(const std_msgs::Float64::ConstPtr& msg) {
-            lastReceivedValue = msg->data;
-            ROS_INFO("Received value inside callback: %f", msg->data);
-        }
+//         void callback(const std_msgs::Float64::ConstPtr& msg) {
+//             lastReceivedValue = msg->data;
+//             ROS_INFO("Received value inside callback: %f", msg->data);
+//         }
 
-        double getLastReceivedValue() const {
-            return lastReceivedValue;
-        }
-};
+//         double getLastReceivedValue() const {
+//             return lastReceivedValue;
+//         }
+// };
 
-ros::NodeHandle* nh_ptr;
-ROSNode* ros_sub_ptr;
-double subscribed_value = 0.0;
+// ros::NodeHandle* nh_ptr;
+// ROSNode* ros_sub_ptr;
+// double subscribed_value = 0.0;
 
 int main(int argc, char *argv[])
 {
-    ros::init(argc, argv, "mujoco_control_node");
-    nh_ptr = new ros::NodeHandle();
+    // ros::init(argc, argv, "mujoco_control_node");
+    // nh_ptr = new ros::NodeHandle();
     
-    // Create the ROS node instance
-    ros_sub_ptr = new ROSNode(*nh_ptr);
+    // // Create the ROS node instance
+    // ros_sub_ptr = new ROSNode(*nh_ptr);
     
-    // Start a background spinner to handle callbacks
-    ros::AsyncSpinner spinner(1); // Use 1 thread
-    spinner.start();
+    // // Start a background spinner to handle callbacks
+    // ros::AsyncSpinner spinner(1); // Use 1 thread
+    // spinner.start();
 
-
-    // std::string model_path = "/home/quant/dial_mpc_ws/src/dial-mpc/models/unitree_go2/mjx_scene_force.xml";
     std::string model_path = "/root/dial-mpc-python/dial_mpc/models/unitree_go2/mjx_scene_force.xml";
-
     // std::string pin_model_path = "/home/quant/dial_mpc_ws/src/dial-mpc/models/unitree_go2/mjx_go2_force.xml";
-    // std::string pin_model_path = "/home/quant/dial_mpc_ws/src/dial-mpc/models/unitree_go2/go2_description.urdf";
     std::string pin_model_path = "/root/dial-mpc-python/dial_mpc/models/unitree_go2/go2_description.urdf";
-
 
     model = ModelType();
     // pinocchio::mjcf::buildModel(pin_model_path, pinocchio::JointModelFreeFlyer(), model);
@@ -103,10 +94,10 @@ int main(int argc, char *argv[])
     info.actuatedDofNum = 12;
     info.numThreeDofContacts = ee_names.size();
 
-    // std::vector<multibody::EndEffector> ees;
+    // std::vector<EndEffector> ees;
     for (int i = 0; i < info.numThreeDofContacts; i++)
     {
-        galileo::EndEffector ee; // changed multibody::EndEffector to galileo::EndEffector
+        EndEffector ee;
         ee.frame_name = ee_names[i];
         ee.frame_idx = model.getFrameId(ee.frame_name);
         ees.push_back(ee);
@@ -129,9 +120,7 @@ int main(int argc, char *argv[])
     Eigen::VectorXd static_force_per_leg(3);
     static_force_per_leg << 0, 0, 9.81 * data.mass[0] / 4;
 
-    // static_force = Eigen::Vector<double, 12>::Zero();
     static_force = Eigen::Matrix<double, 12, 1>::Zero();
-
     for (size_t i = 0; i < info.numThreeDofContacts; ++i)
     {
         static_force.segment<3>(3 * i) = static_force_per_leg;
@@ -147,7 +136,6 @@ int main(int argc, char *argv[])
         J.block(3 * i, 0, 3, info.actuatedDofNum) = jac_pos.rightCols(info.actuatedDofNum);
     }
 
-    // Eigen::Vector<double, 12> tau_des = -J.transpose() * static_force;
     Eigen::Matrix<double, 12, 1> tau_des = -J.transpose() * static_force;
     std::cout << "tau desired: " << tau_des.transpose() << std::endl;
 
@@ -188,10 +176,9 @@ int main(int argc, char *argv[])
 
     mjEnv.Loop();
 
-
-    spinner.stop();
-    delete ros_sub_ptr;
-    delete nh_ptr;
+    // spinner.stop();
+    // delete ros_sub_ptr;
+    // delete nh_ptr;
 
     mjEnv.Exit();
 
@@ -207,20 +194,20 @@ void loop(const mjModel *m, mjData *d)
 
     std::cout << "Inside Loop" << std::endl;
     // Get the ROS subscribed value here
-    double new_subscribed_value = 0.0;
-    int i = 0;
-    if (ros_sub_ptr) {
-        std::cout << "inside if" << "\n";
-        new_subscribed_value = ros_sub_ptr->getLastReceivedValue();
-        while (new_subscribed_value == subscribed_value) {
-            new_subscribed_value = ros_sub_ptr->getLastReceivedValue();
-            i=i+1;
-        }
-        subscribed_value = new_subscribed_value;
-        // Now you can use subscribed_value in your control logic
-        ROS_INFO_THROTTLE(1.0, "Using subscribed value in loop: %f", subscribed_value);
-        std::cout << "i: " << i << "Subscribed value in Loop: " << new_subscribed_value << std::endl;
-    }
+    // double new_subscribed_value = 0.0;
+    // int i = 0;
+    // if (ros_sub_ptr) {
+    //     std::cout << "inside if" << "\n";
+    //     new_subscribed_value = ros_sub_ptr->getLastReceivedValue();
+    //     while (new_subscribed_value == subscribed_value) {
+    //         new_subscribed_value = ros_sub_ptr->getLastReceivedValue();
+    //         i=i+1;
+    //     }
+    //     subscribed_value = new_subscribed_value;
+    //     // Now you can use subscribed_value in your control logic
+    //     ROS_INFO_THROTTLE(1.0, "Using subscribed value in loop: %f", subscribed_value);
+    //     std::cout << "i: " << i << "Subscribed value in Loop: " << new_subscribed_value << std::endl;
+    // }
 
     // Get the measured state
     Eigen::VectorXd q = Eigen::VectorXd::Map(d->qpos, m->nq);
@@ -272,9 +259,7 @@ void loop(const mjModel *m, mjData *d)
         J.block(3 * i, 0, 3, 12) = jac_pos.rightCols(12);
     }
 
-    // Eigen::Vector<double, 12> tau_ff = -J.transpose() * static_force;
     Eigen::Matrix<double, 12, 1> tau_ff = -J.transpose() * static_force;
-
 
     control_desired.tail(m->nu) = tau_ff;
 

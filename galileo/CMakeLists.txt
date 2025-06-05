@@ -1,10 +1,14 @@
-cmake_minimum_required(VERSION 3.0.2)
+cmake_minimum_required(VERSION 3.13)
 project(galileo)
 
 ## Set C++ standard - using C++23 as specified
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
 
 ## Find catkin macros and libraries
 find_package(catkin REQUIRED COMPONENTS
@@ -13,7 +17,9 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 # Find other dependencies
+set(CMAKE_PREFIX_PATH "/usr/local/eigen3.4" ${CMAKE_PREFIX_PATH})
 find_package(Eigen3 REQUIRED)
+message(STATUS "Eigen3 Version Found: ${EIGEN3_INCLUDE_DIRS}")
 find_package(mujoco REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(Threads REQUIRED)

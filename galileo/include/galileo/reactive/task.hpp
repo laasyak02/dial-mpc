@@ -75,6 +75,12 @@ namespace galileo
             using BOut = typename math::VConVec<typename T1dec::B_t, typename T2dec::B_t>::type;
             using DOut = typename math::VConMat<typename T1dec::D_t, typename T2dec::D_t>::type;
             using FOut = typename math::VConVec<typename T1dec::F_t, typename T2dec::F_t>::type;
+            
+            std::cout << "In taskVertcat\n";
+            std::cout << "t1.a_ cols: " << std::move(t1.a_).cols() << "t2.a_ cols: " << std::move(t2.a_).cols() << std::endl;
+            std::cout << "t1.b_ cols: " << std::move(t1.b_).cols() << "t2.b_ cols: " << std::move(t2.b_).cols() << std::endl;
+            std::cout << "t1.d_ cols: " << std::move(t1.d_).cols() << "t2.d_ cols: " << std::move(t2.d_).cols() << std::endl;
+            std::cout << "t1.f_ cols: " << std::move(t1.f_).cols() << "t2.f_ cols: " << std::move(t2.f_).cols() << std::endl;
 
             AOut a_new = math::vertcat(std::move(t1.a_), std::move(t2.a_));
             BOut b_new = math::vertcat(std::move(t1.b_), std::move(t2.b_));

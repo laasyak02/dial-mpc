@@ -70,21 +70,21 @@ namespace galileo
 
             // Addition operator overload.
             template <int M>
-            constexpr auto operator+(Size<M>) const
+            consteval auto operator+(Size<M>) const
             {
                 return Size<(N == dynamic_size || M == dynamic_size ? dynamic_size : N + M)>{};
             }
 
             // Subtraction operator overload.
             template <int M>
-            constexpr auto operator-(Size<M>) const
+            consteval auto operator-(Size<M>) const
             {
                 return Size<(N == dynamic_size || M == dynamic_size ? dynamic_size : N - M)>{};
             }
 
             // Multiplication operator overload.
             template <int M>
-            constexpr auto operator*(Size<M>) const
+            consteval auto operator*(Size<M>) const
             {
                 return Size<(N == dynamic_size || M == dynamic_size ? dynamic_size : N * M)>{};
             }
@@ -92,7 +92,7 @@ namespace galileo
             // Division operator overload.
             // The static_assert ensures division by zero is caught at compile time.
             template <int M>
-            constexpr auto operator/(Size<M>) const
+            consteval auto operator/(Size<M>) const
             {
                 static_assert(M != 0, "Division by zero is not allowed.");
                 return Size<(N == dynamic_size || M == dynamic_size ? dynamic_size : N / M)>{};
@@ -100,7 +100,7 @@ namespace galileo
         };
 
     } // namespace compile_time
-    // consteval
+
     enum AssignmentOp
     {
         setto,

@@ -172,14 +172,14 @@ namespace galileo
                     // mjrRect viewport = {0, 0, 0, 0};
                     // glfwGetFramebufferSize(window, &viewport.width, &viewport.height);
 
-                    // // update scene and render
+                    // update scene and render
                     // mjv_updateScene(m, d, &opt, NULL, &cam, mjCAT_ALL, &scn);
                     // mjr_render(viewport, &scn, &con);
 
-                    // // swap OpenGL buffers (blocking call due to v-sync)
+                    // swap OpenGL buffers (blocking call due to v-sync)
                     // glfwSwapBuffers(window);
 
-                    // // process pending GUI events, call GLFW callbacks
+                    // process pending GUI events, call GLFW callbacks
                     // glfwPollEvents();
                 }
 
@@ -215,34 +215,32 @@ namespace galileo
             public:
                 void initializeImp()
                 {
-                    // headless as in Docker 
-
                     // init GLFW
                     // if (!glfwInit())
-                    // {
-                    //     mju_error("Could not initialize GLFW");
-                    // }
+                    //{
+                    //    mju_error("Could not initialize GLFW");
+                    //}
 
-                    // // create window, make OpenGL context current, request v-sync
-                    // window = glfwCreateWindow(1200, 900, "Demo", NULL, NULL);
-                    // glfwMakeContextCurrent(window);
-                    // glfwSwapInterval(1);
+                    // create window, make OpenGL context current, request v-sync
+                    //window = glfwCreateWindow(1200, 900, "Demo", NULL, NULL);
+                    //glfwMakeContextCurrent(window);
+                    //glfwSwapInterval(1);
 
-                    // // initialize visualization data structures
-                    // mjv_defaultCamera(&cam);
-                    // mjv_defaultOption(&opt);
-                    // mjv_defaultScene(&scn);
-                    // mjr_defaultContext(&con);
+                    // initialize visualization data structures
+                    //mjv_defaultCamera(&cam);
+                    //mjv_defaultOption(&opt);
+                    //mjv_defaultScene(&scn);
+                    //mjr_defaultContext(&con);
 
-                    // // create scene and context
-                    // mjv_makeScene(m, &scn, 2000);
-                    // mjr_makeContext(m, &con, mjFONTSCALE_150);
+                    // create scene and context
+                    //mjv_makeScene(m, &scn, 2000);
+                    //mjr_makeContext(m, &con, mjFONTSCALE_150);
 
-                    // // install GLFW mouse and keyboard callbacks
-                    // glfwSetKeyCallback(window, keyboard);
-                    // glfwSetCursorPosCallback(window, mouse_move);
-                    // glfwSetMouseButtonCallback(window, mouse_button);
-                    // glfwSetScrollCallback(window, scroll);
+                    // install GLFW mouse and keyboard callbacks
+                    //glfwSetKeyCallback(window, keyboard);
+                    //glfwSetCursorPosCallback(window, mouse_move);
+                    //glfwSetMouseButtonCallback(window, mouse_button);
+                    //glfwSetScrollCallback(window, scroll);
                     mjcb_control = mjcontroller;
                 }
 

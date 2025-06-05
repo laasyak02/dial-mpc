@@ -72,9 +72,13 @@ namespace galileo
             using M2Plain = std::decay_t<M2>;
             using ReturnType = typename VConMat<M1Plain, M2Plain>::type;
 
+            std::cout << "m1 dimensions: " << m1.rows() << "x" << m1.cols() << std::endl;
+            std::cout << "m2 dimensions: " << m2.rows() << "x" << m2.cols() << std::endl;
+            std::cout << "m1:\n" << m1 << std::endl;
+            std::cout << "m2:\n" << m2 << std::endl;
             // Ensure the number of columns agree at runtime.
             assert(m1.cols() == m2.cols() && "vertcat: matrices must have the same number of columns.");
-            std::cout << "After Assert\n";
+
             // Grab the runtime number of rows.
             const int rows1 = m1.rows();
             const int rows2 = m2.rows();
@@ -109,7 +113,12 @@ namespace galileo
                                ReturnType::ColsAtCompileTime != Eigen::Dynamic)
             {
                 const int totalRows = rows1 + rows2;
-                ReturnType res(totalRows, static_cast<int>(ReturnType::ColsAtCompileTime));
+                // const int totalCols = m1.cols();
+                // constexpr int cols = ReturnType::ColsAtCompileTime;
+                ReturnType res(totalRows, ReturnType::ColsAtCompileTime);
+		        // ReturnType res(totalRows, static_cast<int>(ReturnType::ColsAtCompileTime));
+                // ReturnType res(Eigen::Index(totalRows), Eigen::Index(totalCols));
+                // ReturnType res(rows1 + rows2, ReturnType::ColsAtCompileTime);
                 res << m1, m2;
                 return res;
             }
@@ -117,8 +126,13 @@ namespace galileo
                                ReturnType::ColsAtCompileTime == Eigen::Dynamic)
             {
                 // Unusual for vertical stacking (fixed rows, dynamic columns).
+                // const int totalRows = m1.rows() + m2.rows();
                 const int totalCols = m1.cols(); // must match m2.cols() at runtime
-                ReturnType res(static_cast<int>(ReturnType::RowsAtCompileTime), totalCols);
+                // constexpr int rows = ReturnType::RowsAtCompileTime;
+                ReturnType res(ReturnType::RowsAtCompileTime, totalCols);
+                // ReturnType res(static_cast<int>(ReturnType::RowsAtCompileTime), totalCols);
+                // ReturnType res(Eigen::Index(totalRows), Eigen::Index(totalCols));
+                // ReturnType res(ReturnType::RowsAtCompileTime, m1.cols());
                 res << m1, m2;
                 return res;
             }
