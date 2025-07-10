@@ -1,0 +1,8 @@
+prefix=/root/ros1_ws/devel
+
+Name: dial_mpc
+Description: Description of dial_mpc
+Version: 0.0.0
+Cflags: -I/root/ros1_ws/src/dial_mpc/include -I/usr/local/eigen3.4/include/eigen3 -I/root/.mujoco/mujoco-3.3.1/include
+Libs: -L${prefix}/lib /root/.mujoco/mujoco-3.3.1/lib/libmujoco.so
+Requires: roscpp std_msgs geometry_msgs
