@@ -1,8 +1,0 @@
-prefix=/root/ros1_ws/devel
-
-Name: galileo
-Description: Description of galileo
-Version: 0.0.1
-Cflags: 
-Libs: -L${prefix}/lib 
-Requires: 
