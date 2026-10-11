@@ -1,6 +1,6 @@
 # DIAL-MPC for Legged Robots
 
-A **C++/Eigen** implementation of **DIAL-MPC** (Diffusion-Inspired Annealing for Legged MPC) — a sampling-based model predictive controller for legged locomotion — with MuJoCo simulation and RViz visualization.
+A **C++/Eigen** implementation of **DIAL-MPC** (Diffusion-Inspired Annealing for Legged MPC) - a sampling-based model predictive controller for legged locomotion - with MuJoCo simulation and RViz visualization.
 
 DIAL-MPC is a training-free, sampling-based controller: at each planning step it samples a batch of control sequences, rolls them out, and refines them over several annealed "diffusion" iterations (an MPPI-style update with a decaying noise schedule), producing smooth control trajectories for dynamic legged motion.
 
@@ -12,7 +12,7 @@ This repo ports the algorithm from Python to C++/Eigen and runs it on the **Unit
 
 | Directory | Description |
 |-----------|-------------|
-| `dial_mpc/` | **ROS2 package** (`rclcpp`) — control-sequence generation, an RViz visualizer (`visualization_msgs`), and legged-robot inverse kinematics. |
+| `dial_mpc/` | **ROS2 package** (`rclcpp`) - control-sequence generation, an RViz visualizer (`visualization_msgs`), and legged-robot inverse kinematics. |
 | `dial_mpc_eigen/` | **Standalone C++/Eigen** implementation of the DIAL-MPC core and the Unitree Go2 environment, with MuJoCo + GLFW simulation. |
 | `dial_mpc_eigen_plotting/` | Same as above, with added plotting of the control sequences. |
 | `models/` | MuJoCo models for **Unitree Go2** (quadruped) and **Unitree H1** (humanoid), including MJX scene variants. |
@@ -40,7 +40,7 @@ The Unitree Go2 environment (`unitree-go2-env.h`) wraps MuJoCo physics with a PD
 - **MuJoCo** (physics + rendering)
 - **Eigen 3.3+** (linear algebra, cubic-spline interpolation)
 - **GLFW3** (visualization window)
-- **ROS2** + `rclcpp`, `std_msgs`, `geometry_msgs`, `visualization_msgs` — for the `dial_mpc` ROS2 package only
+- **ROS2** + `rclcpp`, `std_msgs`, `geometry_msgs`, `visualization_msgs` - for the `dial_mpc` ROS2 package only
 - A C++ toolchain with CMake
 
 ---
