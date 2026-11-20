@@ -2,21 +2,15 @@
 
 A **C++/Eigen** implementation of **DIAL-MPC** (Diffusion-Inspired Annealing for Legged MPC) - a sampling-based model predictive controller for legged locomotion - with MuJoCo simulation and RViz visualization.
 
+<p align="center">
+  <img src="media/go2_walk.gif" width="560" alt="Unitree Go2 walking in MuJoCo under DIAL-MPC">
+  <br><i>Unitree Go2 walking in MuJoCo, controlled by the C++ DIAL-MPC.</i>
+</p>
+
 DIAL-MPC is a training-free, sampling-based controller: at each planning step it samples a batch of control sequences, rolls them out, and refines them over several annealed "diffusion" iterations (an MPPI-style update with a decaying noise schedule), producing smooth control trajectories for dynamic legged motion.
 
 This repo ports the algorithm from Python to C++/Eigen and runs it on the **Unitree Go2** (quadruped) MuJoCo model.
 
-<table align="center">
-  <tr>
-    <td align="center"><img src="media/go2_walk.gif" width="260" alt="Go2 walking"><br><b>Walk</b></td>
-    <td align="center"><img src="media/go2_trot.gif" width="260" alt="Go2 trotting"><br><b>Trot</b></td>
-    <td align="center"><img src="media/go2_stand.gif" width="260" alt="Go2 standing"><br><b>Stand</b></td>
-  </tr>
-</table>
-
-<p align="center"><i>Unitree Go2 in MuJoCo, driven by the C++ DIAL-MPC for three gaits (400 timesteps each, 1.0 m/s commanded forward velocity for walk and trot).</i></p>
-
-📄 **[Project report (PDF)](docs/DIAL_MPC_Report.pdf)** - method, implementation details and results.
 
 ---
 
@@ -47,10 +41,37 @@ The Unitree Go2 environment (`unitree-go2-env.h`) wraps MuJoCo physics with a PD
 
 ---
 
-## Results & Galileo integration
+## Results
 
-- **Gaits:** DIAL-MPC was run for stand, walk and trot for 400 timesteps each. Base-position plots show the robot holding position while standing, and steady forward motion along X with little drift in Y for walking and trotting (walking was the smoother of the two). Plots are in the [report](docs/DIAL_MPC_Report.pdf).
-- **Galileo:** the goal is to use DIAL-MPC's solution as a warm start for [Galileo](https://arxiv.org/abs/2409.12465), a pseudospectral trajectory optimizer for legged robots. Joint torques, contact forces, joint accelerations and the contact plan are extracted from the DIAL-MPC rollout, and DIAL-MPC and GalileoV2 run as ROS nodes, with DIAL-MPC publishing its solution for Galileo to subscribe to. Feeding these values into Galileo's QP solver as the initial guess, and measuring the effect on convergence, is the next step.
+DIAL-MPC was run for three gaits - **stand**, **walk** and **trot** - for 400 timesteps each, with a commanded forward velocity of 1.0 m/s for walking and trotting.
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="media/go2_trot.gif" width="380" alt="Go2 trotting"><br><b>Trot</b></td>
+    <td align="center"><img src="media/go2_stand.gif" width="380" alt="Go2 standing"><br><b>Stand</b></td>
+  </tr>
+</table>
+
+The base position over time shows the expected behavior for each gait: the robot holds its position while standing, and moves steadily forward along X with little drift in Y while walking and trotting. Z stays near the nominal base height, with small oscillations from the gait. Walking comes out smoother than trotting.
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="media/base_position_stand.png" width="270" alt="Base position, standing"><br><b>Stand</b></td>
+    <td align="center"><img src="media/base_position_walk.png" width="270" alt="Base position, walking"><br><b>Walk</b></td>
+    <td align="center"><img src="media/base_position_trot.png" width="270" alt="Base position, trotting"><br><b>Trot</b></td>
+  </tr>
+</table>
+<p align="center"><i>Base position (m) over 400 timesteps - Position 0, 1, 2 = x, y, z.</i></p>
+
+---
+
+## Galileo integration
+
+DIAL-MPC's solution is also used to warm-start **[Galileo](https://arxiv.org/abs/2409.12465)**, a C++ pseudospectral trajectory optimizer for legged robots. From each DIAL-MPC rollout, the state (`q`, `v`), the controls (joint accelerations, foot contact forces, joint torques) and the contact plan are extracted and passed to Galileo, where they are used as the initial guess for its QP solver (qpOASES) instead of the previous solution. DIAL-MPC and GalileoV2 run as ROS nodes, with DIAL-MPC publishing its solution and Galileo subscribing to it.
+
+<p align="center"><img src="media/dial_galileo_pipeline.png" width="680" alt="DIAL-MPC to Galileo pipeline"></p>
+
+This work lives on the **[`devel/galileo-v2-integration`](https://github.com/laasyak02/dial-mpc/tree/devel/galileo-v2-integration)** branch, as a ROS1 catkin workspace (`ros1_ws/`) containing the `dial_mpc` and `galileo` packages.
 
 ---
 
