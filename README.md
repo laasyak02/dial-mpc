@@ -67,11 +67,11 @@ The base position over time shows the expected behavior for each gait: the robot
 
 ## Galileo integration
 
-DIAL-MPC's solution is also used to warm-start **[Galileo](https://arxiv.org/abs/2409.12465)**, a C++ pseudospectral trajectory optimizer for legged robots. From each DIAL-MPC rollout, the state (`q`, `v`), the controls (joint accelerations, foot contact forces, joint torques) and the contact plan are extracted and passed to Galileo, where they are used as the initial guess for its QP solver (qpOASES) instead of the previous solution. DIAL-MPC and GalileoV2 run as ROS nodes, with DIAL-MPC publishing its solution and Galileo subscribing to it.
+DIAL-MPC's solution is also used to warm-start **[Galileo](https://arxiv.org/abs/2409.12465)**, a C++ pseudospectral trajectory optimizer for legged robots. At each step, the joint accelerations, foot contact forces and joint torques from the DIAL-MPC solution are published over ROS, and Galileo's whole-body controller uses them as the initial guess for its QP solve (qpOASES) instead of the solver's default start.
 
 <p align="center"><img src="media/dial_galileo_pipeline.png" width="680" alt="DIAL-MPC to Galileo pipeline"></p>
 
-This work lives on the **[`devel/galileo-v2-integration`](https://github.com/laasyak02/dial-mpc/tree/devel/galileo-v2-integration)** branch, as a ROS1 catkin workspace (`ros1_ws/`) containing the `dial_mpc` and `galileo` packages.
+This work lives on the **[`devel/galileo-v2-integration`](https://github.com/laasyak02/dial-mpc/tree/devel/galileo-v2-integration)** branch, as a ROS1 catkin workspace with the `dial_mpc` and `galileo` packages - see its README for details and how to run it.
 
 ---
 
